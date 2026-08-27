@@ -21,13 +21,13 @@
 
 
 module alu #(
-    parameter NB_DATA = 7,
+    parameter NB_DATA = 8,
     parameter NB_OP = 6
 )
 (
     input wire signed [NB_DATA-1:0]    i_a,
     input wire signed [NB_DATA-1:0]    i_b,
-    input wire signed [NB_OP-1:0]      i_op,
+    input wire        [NB_OP-1:0]      i_op,
     output reg signed [NB_DATA-1:0]    o_alu 
 );
 
