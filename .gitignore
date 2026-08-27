@@ -2,6 +2,7 @@
 #  Vivado - archivos generados (NO subir)
 # ==========================================
 vivado_project/
+*.srcs/utils_1/
 *.jou
 *.log
 *.str
@@ -30,8 +31,6 @@ usage_statistics*
 *.out
 a.out
 sim
-work/
-
 # ==========================================
 #  Sistema operativo / editores
 # ==========================================
