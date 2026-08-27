@@ -78,25 +78,23 @@ module load_register #(
 )
 (
     input wire [NB_DATA-1:0] i_bus_data,
-    input wire i_a,
-    input wire i_b,
-    input wire i_c,
+    input wire i_load_a,
+    input wire i_load_b,
+    input wire i_load_c,
+    input wire i_clk,
     output reg [NB_OP-1:0] o_op,
     output reg [NB_DATA-1:0] o_reg_a,
     output reg [NB_DATA-1:0] o_reg_b
 );
-
-    always @(i_a)
+    
+    always @(posedge i_clk)
     begin
-        o_reg_a = i_bus_data;
-    end
-    always @(i_b)
-    begin
-        o_reg_b = i_bus_data; 
-    end
-    always @(i_c)
-    begin
-        o_op = i_bus_data;
+        if (i_load_a == 1)
+            o_reg_a = i_bus_data;
+        else if (i_load_b == 1)
+            o_reg_b = i_bus_data; 
+        else if(i_load_c == 1)
+            o_op = i_bus_data; // Truncamiento de los ultimos dos bits mas significativos, usamos solo 6.
     end
     
 endmodule
