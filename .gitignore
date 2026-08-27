@@ -12,7 +12,6 @@ vivado_project/
 *.runs/
 *.sim/
 *.gen/
-*.srcs/
 *.wdb
 *.wcfg
 *.pb
