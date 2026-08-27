@@ -1,0 +1,43 @@
+# ==========================================
+#  Vivado - archivos generados (NO subir)
+# ==========================================
+vivado_project/
+*.jou
+*.log
+*.str
+.Xil/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.gen/
+*.srcs/
+*.wdb
+*.wcfg
+*.pb
+*.rpt
+*.dcp
+*.bit
+*.bin
+*.ltx
+webtalk*
+usage_statistics*
+
+# ==========================================
+#  Icarus Verilog / GTKWave
+# ==========================================
+*.vcd
+*.out
+a.out
+sim
+work/
+
+# ==========================================
+#  Sistema operativo / editores
+# ==========================================
+.DS_Store
+Thumbs.db
+*~
+*.swp
+.vscode/
