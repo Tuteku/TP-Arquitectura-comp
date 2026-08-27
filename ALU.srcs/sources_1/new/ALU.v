@@ -71,3 +71,32 @@ module alu #(
         endcase
      end
    endmodule
+
+module load_register #(
+    parameter NB_DATA = 8,
+    parameter NB_OP = 6
+)
+(
+    input wire [NB_DATA-1:0] i_bus_data,
+    input wire i_a,
+    input wire i_b,
+    input wire i_c,
+    output reg [NB_OP-1:0] o_op,
+    output reg [NB_DATA-1:0] o_reg_a,
+    output reg [NB_DATA-1:0] o_reg_b
+);
+
+    always @(i_a)
+    begin
+        o_reg_a = i_bus_data;
+    end
+    always @(i_b)
+    begin
+        o_reg_b = i_bus_data; 
+    end
+    always @(i_c)
+    begin
+        o_op = i_bus_data;
+    end
+    
+endmodule
