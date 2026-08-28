@@ -1,4 +1,5 @@
 `timescale 1ns / 1ps
+`default_nettype none // Desactiva la creacion automatica de wire, usar un nombre no declarado es un error de compilacion
 //////////////////////////////////////////////////////////////////////////////////
 // Company: 
 // Engineer: 
@@ -72,29 +73,51 @@ module alu #(
      end
    endmodule
 
-module load_register #(
+module alu_top #(
     parameter NB_DATA = 8,
     parameter NB_OP = 6
 )
 (
-    input wire [NB_DATA-1:0] i_bus_data,
+    input wire [NB_DATA-1:0] i_switches,
     input wire i_load_a,
     input wire i_load_b,
     input wire i_load_c,
     input wire i_clk,
-    output reg [NB_OP-1:0] o_op,
-    output reg [NB_DATA-1:0] o_reg_a,
-    output reg [NB_DATA-1:0] o_reg_b
+    output wire [NB_DATA-1:0] o_leds
 );
+    
+    reg [NB_OP-1:0] r_op;
+    reg [NB_DATA-1:0] r_a;
+    reg [NB_DATA-1:0] r_b;
+    
+    initial
+    begin
+        r_op = {NB_OP{1'b0}};
+        r_a = {NB_DATA{1'b0}};
+        r_b = {NB_DATA{1'b0}};
+    end
     
     always @(posedge i_clk)
     begin
+        
         if (i_load_a == 1)
-            o_reg_a = i_bus_data;
-        else if (i_load_b == 1)
-            o_reg_b = i_bus_data; 
-        else if(i_load_c == 1)
-            o_op = i_bus_data; // Truncamiento de los ultimos dos bits mas significativos, usamos solo 6.
+            r_a <= i_switches;
+        if (i_load_b == 1)
+            r_b <= i_switches; 
+        if(i_load_c == 1)
+            r_op <= i_switches; // Truncamiento de los ultimos dos bits mas significativos, usamos solo 6.
     end
+    
+    alu #(
+        .NB_DATA (NB_DATA),
+        .NB_OP (NB_OP)
+    ) u_alu
+    ( 
+        .i_a (r_a),
+        .i_b (r_b),
+        .i_op (r_op),
+        .o_alu (o_leds)
+    );
+    
     
 endmodule
