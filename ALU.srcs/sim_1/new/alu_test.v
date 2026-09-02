@@ -24,6 +24,7 @@ module tb_alu_top;
     
     localparam NB_DATA = 8;
     localparam NB_OP = 6;
+    localparam PERIODO = 10; // 10ns -> 100MHz
     
     reg [NB_DATA-1:0] i_switches;
     reg i_load_a;
@@ -53,37 +54,37 @@ module tb_alu_top;
         i_load_a = 1'b0;
         i_load_b = 1'b0;
         i_load_c = 1'b0;
-        @(negedge i_clk);
-        i_switches = 8'd10;
-        i_load_a = 1'b1;
+        @(negedge i_clk);   // Cargar registro A
+            i_switches = 8'd10;
+            i_load_a = 1'b1;
         @(posedge i_clk);
-        #1;
-        $display("r_a = %d", u_01.r_a); 
-        @(negedge i_clk);
-        i_load_a = 0;
-        i_load_b = 1;
-        i_switches = 8'd5;
+            #1;
+            $display("r_a = %d", u_01.r_a); 
+        @(negedge i_clk);   // Cargar registro B
+            i_load_a = 0;
+            i_load_b = 1;
+            i_switches = 8'd5;
         @(posedge i_clk);
-        #1;
-        $display("r_b = %d", u_01.r_b);
-        @(negedge i_clk);
-        i_load_b = 0;
-        i_switches = 6'b100000;
-        i_load_c = 1;
+            #1;
+            $display("r_b = %d", u_01.r_b);
+        @(negedge i_clk);   // Cargar registro OP
+            i_load_b = 0;
+            i_switches = 6'b100000;
+            i_load_c = 1;
         @(posedge i_clk);
-        #1;
-        $display("r_op = %b", u_01.r_op);
-        #1;
-        $display("o_leds = %d", u_01.o_leds);
+            #1;
+            $display("r_op = %b", u_01.r_op);
+            #1;
+            $display("o_leds = %d", u_01.o_leds);
         
         @(negedge i_clk);
-        i_load_c   = 1'b0;
-        i_switches = 8'd99;
+            i_load_c   = 1'b0;
+            i_switches = 8'd99;
         @(posedge i_clk);
-        #1;
-        $display("Con todos los load en 0 y switches=99:");
-        $display("  r_a=%0d r_b=%0d r_op=%b",u_01.r_a, u_01.r_b, u_01.r_op);
+            #1;
+            $display("Con todos los load en 0 y switches=99:");
+            $display("  r_a=%0d r_b=%0d r_op=%b",u_01.r_a, u_01.r_b, u_01.r_op);
 
-        #250 $finish;
-        end        
+            #(PERIODO*10) $finish;
+    end        
 endmodule
