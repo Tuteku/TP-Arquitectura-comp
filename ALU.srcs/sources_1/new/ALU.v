@@ -60,10 +60,10 @@ module alu #(
                     o_alu = i_a ^ i_b;
                   end
             SRA : begin
-                    o_alu = i_a >>> i_b;// [NB_SHIFT-1:0];
+                    o_alu = i_a >>> i_b [NB_SHIFT-1:0];
                   end
             SRL : begin
-                    o_alu = i_a >> i_b;// [NB_SHIFT-1:0];
+                    o_alu = i_a >> i_b [NB_SHIFT-1:0];
                   end
             NOR : begin
                     o_alu = ~(i_a|i_b); 
