@@ -83,7 +83,8 @@ module alu_top #(
     input wire i_load_b,
     input wire i_load_c,
     input wire i_clk,
-    output wire [NB_DATA-1:0] o_leds
+    output wire [NB_DATA-1:0] o_leds,
+    input  wire  i_reset
 );
     
     reg [NB_OP-1:0] r_op;
@@ -97,17 +98,18 @@ module alu_top #(
         r_b = {NB_DATA{1'b0}};
     end
     
-    always @(posedge i_clk)
-    begin
-        
-        if (i_load_a == 1)
-            r_a <= i_switches;
-        if (i_load_b == 1)
-            r_b <= i_switches; 
-        if(i_load_c == 1)
-            r_op <= i_switches; // Truncamiento de los ultimos dos bits mas significativos, usamos solo 6.
+     always @(posedge i_clk) begin
+        if (i_reset) begin
+            r_a  <= {NB_DATA{1'b0}};
+            r_b  <= {NB_DATA{1'b0}};
+            r_op <= {NB_OP{1'b0}};
+        end
+        else begin
+            if (i_load_a) r_a  <= i_switches;
+            if (i_load_b) r_b  <= i_switches;
+            if (i_load_c) r_op <= i_switches[NB_OP-1:0];
+        end
     end
-    
     alu #(
         .NB_DATA (NB_DATA),
         .NB_OP (NB_OP)
