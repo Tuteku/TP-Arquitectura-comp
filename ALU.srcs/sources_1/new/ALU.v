@@ -40,7 +40,7 @@ module alu #(
     localparam SRA = 6'b000011;
     localparam SRL = 6'b000010;
     localparam NOR = 6'b100111;
-
+    localparam NB_SHIFT = $clog2(NB_DATA);
     always @(*)
     begin
         case(i_op)
@@ -60,10 +60,10 @@ module alu #(
                     o_alu = i_a ^ i_b;
                   end
             SRA : begin
-                    o_alu = i_a >>> i_b;
+                    o_alu = i_a >>> i_b;// [NB_SHIFT-1:0];
                   end
             SRL : begin
-                    o_alu = i_a >> i_b;
+                    o_alu = i_a >> i_b;// [NB_SHIFT-1:0];
                   end
             NOR : begin
                     o_alu = ~(i_a|i_b); 
