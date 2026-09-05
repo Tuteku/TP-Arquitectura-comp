@@ -31,6 +31,7 @@ module tb_alu_top;
     reg i_load_b;
     reg i_load_c;
     reg i_clk;
+    reg i_reset;
     integer i = 0;
     wire [NB_DATA-1:0] o_leds;
     
@@ -43,13 +44,22 @@ module tb_alu_top;
         .i_load_b(i_load_b),
         .i_load_c(i_load_c),
         .i_clk(i_clk),
+        .i_reset(i_reset),
         .o_leds(o_leds)
     );
-    
+
+    // Generador de clock: PERIODO ns -> 100 MHz
+    always 
+    begin
+    #(PERIODO/2) 
+    i_clk = ~i_clk;
+    end
+
     initial
     begin
         #0
         i_clk = 1'b1;
+        i_reset = 1'b0;
         i_switches = {NB_DATA{1'b0}};
         i_load_a = 1'b0;
         i_load_b = 1'b0;

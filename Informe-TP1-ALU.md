@@ -11,7 +11,7 @@
 
 ## 1. Objetivo
 
-El trabajo consistió en implementar una ALU sobre FPGA, parametrizable en el ancho del bus de datos para poder reutilizarla en el trabajo final de la materia, y validarla mediante un test bench con generación de entradas aleatorias y chequeo automático de resultados. Adicionalmente se pedía simular el diseño con las herramientas de Vivado, incluyendo el análisis de tiempo.
+El trabajo consistió en implementar una ALU sobre FPGA, parametrizable en el ancho del bus de datos para poder reutilizarla en el resto de trabajos de la materia, y validarla mediante un test bench con generación de entradas aleatorias y chequeo automático de resultados. Adicionalmente se pedía simular el diseño con las herramientas de Vivado, incluyendo el análisis de tiempo.
 
 La placa utilizada fue una **Digilent Basys3**, con FPGA Xilinx Artix-7 (`xc7a35tcpg236-1`), y el entorno de desarrollo fue **Vivado 2025.2**.
 
@@ -64,7 +64,7 @@ El parámetro `NB_DATA` define el ancho del bus de datos. `NB_OP` se mantuvo en 
 
 ### 4.1 Puertos declarados como `signed`
 
-Los operandos y la salida se declararon `signed`. El desplazamiento aritmético solo extiende el signo si el operando está declarado con signo. Sin esa declaración las operaciones SRA y SRL producirían resultados idénticos.
+Los operandos y la salida se declararon `signed`. El desplazamiento aritmético solo extiende el signo si el operando está declarado con `signed`. Sin esa declaración las operaciones SRA y SRL producirían resultados idénticos.
 
 ### 4.2 Cantidad de desplazamiento acotada
 
@@ -76,9 +76,7 @@ localparam NB_SHIFT = $clog2(NB_DATA);
 SRA : o_alu = i_a >>> i_b[NB_SHIFT-1:0];
 SRL : o_alu = i_a >>  i_b[NB_SHIFT-1:0];
 ```
-La justificación es que desplazar un dato de 8 bits en 8 o más posiciones produce siempre el mismo resultado, por lo que los bits superiores de `i_b` no aportan información.
-
-El efecto de esta optimización se cuantifica en la sección 7.1.
+La justificación es que desplazar un dato de 8 bits en 8 o más posiciones produce siempre el mismo resultado, por eso se definió que el campo de desplazamiento son los NB_SHIFT bits bajos de i_b. El ahorro de logica que produce esta decisión se cuantifica en la sección 7.1.
 
 ### 4.3 Comportamiento ante un código de operación inválido
 
@@ -100,7 +98,7 @@ if (i_load_b) r_b  <= i_switches;
 if (i_load_c) r_op <= i_switches[NB_OP-1:0];
 ```
 
-Esto es debido a que en los `if`, cada señal de carga llega directamente al pin `CE` (clock enable) de su registro, sin lógica intermedia. Si se activan dos a la vez, ambos registros se cargan con el mismo valor.
+Esto es debido a que en los `if`, cada señal de carga llega directamente con el positivo del clock. Si se activan dos a la vez, ambos registros se cargan con el mismo valor.
 
 ### 4.5 Reset síncrono
 
@@ -177,7 +175,7 @@ endtask
 
 ### 7.1 Impacto de la optimización del desplazador
 
-Para cuantificar el efecto de acotar la cantidad de desplazamiento (sección 4.2), se sintetizó el módulo `alu` con y sin la máscara utilizando Yosys, que reporta el conteo en compuertas genéricas:
+Para cuantificar el efecto de acotar la cantidad de desplazamiento (sección 4.2), se sintetizó el módulo `alu` con y sin la máscara utilizando el sintetizador Yosys, que reporta el conteo en compuertas genéricas:
 
 ![alt text](<Pasted image-1.png>)
 
@@ -195,5 +193,27 @@ Además la reducción de etapas acorta el camino combinacional, lo que se traduc
 
 
 
-## 9. Conclusiones
+## 8. Conclusiones
+
+Se implementó y verificó una ALU combinacional de ocho operaciones, parametrizable
+en el ancho del bus de datos, que queda disponible como bloque reutilizable para los
+trabajos siguientes de la materia. La validación se hizo en dos etapas, primero por
+simulación, con un test bench de estímulos aleatorios que compara la salida contra un
+modelo de referencia sobre 804 casos, y despues sobre la Basys3, donde el
+comportamiento observado en los LEDs coincidió con el de la simulación.
+
+Más allá del resultado funcional, el trabajo dejó algunas conclusiones sobre las
+decisiones de diseño:
+
+- La declaración `signed` de los puertos es un detalle importante ya que es lo que separa
+  SRA de SRL. Sin ella, ambas operaciones son iguales.
+- Acotar la cantidad de desplazamiento a `$clog2(NB_DATA)` bits es una decisión de
+  especificación que permite darle uso al desplazamiento. Como beneficio adicional, redujo un 16,8 % la cantidad
+  de celdas del diseño.
+- El valor `x` en la rama `default` cumple dos funciones opuestas según el contexto en el que se encuentre,
+  en simulación muestra de inmediato un opcode no contemplado, y en síntesis le da
+  libertad al optimizador para elegir la implementación más económica.
+- Parametrizar desde el principio tuvo un costo bajo y es lo que permite llevar el
+  módulo a 16 o 32 bits sin modificar la lógica, que es la condición para poder
+  reutilizarlo más adelante.
 

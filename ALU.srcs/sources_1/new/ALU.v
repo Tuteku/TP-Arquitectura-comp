@@ -99,12 +99,14 @@ module alu_top #(
     end
     
      always @(posedge i_clk) begin
-        if (i_reset) begin
+        if (i_reset) 
+        begin
             r_a  <= {NB_DATA{1'b0}};
             r_b  <= {NB_DATA{1'b0}};
             r_op <= {NB_OP{1'b0}};
         end
-        else begin
+        else
+        begin
             if (i_load_a) r_a  <= i_switches;
             if (i_load_b) r_b  <= i_switches;
             if (i_load_c) r_op <= i_switches[NB_OP-1:0];

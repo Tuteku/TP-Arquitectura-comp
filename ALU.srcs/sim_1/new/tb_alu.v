@@ -84,6 +84,7 @@ module tb_alu;
             end
         end
     endtask 
+    
 initial 
     begin
         errores = 0;
