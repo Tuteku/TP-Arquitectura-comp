@@ -26,7 +26,7 @@ El sistema se dividió en dos módulos:
 
 
 ### 2.1 Diagrama de bloques
-![alt text](image-1.png)
+![alt text](/assets/esquema.png)
 
 ## 3. El módulo ALU
 
@@ -168,7 +168,7 @@ endtask
 
 ### 6.2 Resultados
 **tb_alu:**
-![alt text](image-2.png)
+![alt text](/assets/tb_alu.png)
 **tb_alu_top:**
 
 ## 7. Síntesis e implementación
@@ -177,7 +177,7 @@ endtask
 
 Para cuantificar el efecto de acotar la cantidad de desplazamiento (sección 4.2), se sintetizó el módulo `alu` con y sin la máscara utilizando el sintetizador Yosys, que reporta el conteo en compuertas genéricas:
 
-![alt text](<Pasted image-1.png>)
+![alt text](/assets/yoys.png)
 
 | Versión | Celdas |
 |---|---|
