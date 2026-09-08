@@ -140,7 +140,7 @@ Se desarrollaron dos test benches con propósitos distintos:
 | `tb_alu_top` | `alu_top` | La carga de los registros y la integración |
 
 
-### 6.1 Estructura del chequeo automático
+### 6.1 Test bench de la ALU
 
 El test bench de la ALU se organizó en torno a una `task` que encapsula todo el procedimiento de verificación:
 
@@ -166,10 +166,101 @@ task alu_task;
 endtask
 ```
 
-### 6.2 Resultados
-**tb_alu:**
+La `task` recibe los dos operandos y el opcode, los aplica a la ALU, calcula en paralelo el
+resultado esperado con los operadores propios de Verilog y compara ambos valores con `!==`,
+que a diferencia de `!=` también distingue los `x`. De esa forma el chequeo es automático y
+no depende de mirar la forma de onda. Cada llamada incrementa el contador de casos y, si hay
+un valor distinto, imprime el detalle del caso y suma un error.
+
+Las pruebas se dividen en dos grupos. Primero cuatro casos dirigidos que apuntan a
+situaciones límite (desbordamiento en la suma, resta que da cero, desplazamiento por cero y
+un opcode no contemplado), y después un bucle de 100 iteraciones que invoca las ocho
+operaciones con operandos generados por `$random`, lo que da un total de 804 casos. Al
+finalizar se imprime el resumen con la cantidad de casos, la cantidad de errores y el
+veredicto `TEST PASSED` / `TEST FAILED`.
+
+### 6.2 Test bench del `alu_top`
+
+El `alu_top` no agrega lógica aritmética, así que este segundo test bench no vuelve a
+verificar las operaciones, sino la parte secuencial del diseño, que cada registro se cargue
+únicamente cuando su propia señal de enable está activa, que la carga ocurra con el flanco de
+clock y que la salida refleje el contenido de los registros. Por eso el chequeo se observa con `$display` en lugar de comparar contra un modelo de referencia.
+
+El banco genera un clock de 10 ns (100 MHz, el mismo del oscilador de la placa) con un
+`always` y aplica los estímulos dentro de un único bloque `initial`:
+
+```verilog
+ initial
+    begin
+        #0
+        i_clk = 1'b1;
+        i_reset = 1'b0;
+        i_switches = {NB_DATA{1'b0}};
+        i_load_a = 1'b0;
+        i_load_b = 1'b0;
+        i_load_c = 1'b0;
+        @(negedge i_clk);   // Cargar registro A
+            i_switches = 8'd10;
+            i_load_a = 1'b1;
+        @(posedge i_clk);
+            #1;
+            $display("r_a = %d", u_01.r_a); 
+        @(negedge i_clk);   // Cargar registro B
+            i_load_a = 0;
+            i_load_b = 1;
+            i_switches = 8'd5;
+        @(posedge i_clk);
+            #1;
+            $display("r_b = %d", u_01.r_b);
+        @(negedge i_clk);   // Cargar registro OP
+            i_load_b = 0;
+            i_switches = 6'b100000;
+            i_load_c = 1;
+        @(posedge i_clk);
+            #1;
+            $display("r_op = %b", u_01.r_op);
+            #1;
+            $display("o_leds = %d", u_01.o_leds);
+        
+        @(negedge i_clk);
+            i_load_c   = 1'b0;
+            i_switches = 8'd99;
+        @(posedge i_clk);
+            #1;
+            $display("Con todos los load en 0 y switches=99:");
+            $display("  r_a=%0d r_b=%0d r_op=%b",u_01.r_a, u_01.r_b, u_01.r_op);
+
+            #(PERIODO*10) $finish;
+    end
+```
+
+Las entradas se modifican siempre en el flanco negativo (`@(negedge i_clk)`), de manera que llegan estables
+al flanco positivo y se respetan los tiempos de setup y hold del registro. Las lecturas se
+hacen después del flanco positivo con un retardo `#1`, porque las asignaciones no bloqueantes
+del `always` recién actualizan los registros al final del paso de simulación, si se leyera
+exactamente en el `posedge` se vería todavía el valor viejo.
+
+Para observar el estado interno se usa acceso jerárquico a las señales del módulo instanciado
+(`u_01.r_a`, `u_01.r_b`, `u_01.r_op`), ya que los registros no están expuestos como puertos.
+
+La secuencia recorre tres cargas encadenadas, `r_a = 10`, `r_b = 5` y `r_op = 100000` (ADD),
+activando en cada paso un único enable. Después de la tercera carga la salida debe valer 15,
+lo que confirma que la ALU está correctamente conectada a los tres registros. El último paso
+es el complemento de los anteriores, se bajan las tres señales de carga y se cambian los
+switches a 99, para verificar que los registros retienen su valor y que ningún dato entra sin
+su enable correspondiente.
+
+### 6.3 Resultados
+
+En el `tb_alu` los 804 casos se ejecutaron sin diferencias contra el modelo de referencia:
+
 ![alt text](/assets/tb_alu.png)
-**tb_alu_top:**
+
+En el `tb_alu_top` la consola muestra las tres cargas independientes, la salida `o_leds = 15`
+correspondiente a 10 + 5, y la retención de los tres registros con los enables en cero a pesar del
+cambio de los switches:
+
+![alt text](/assets/tb_alu_top.png)
 
 ## 7. Síntesis e implementación
 
@@ -191,7 +282,51 @@ Además la reducción de etapas acorta el camino combinacional, lo que se traduc
 
 ### 7.2 Análisis de tiempo
 
+El reloj se restringió desde el archivo de constraints con el período del oscilador de la placa:
 
+```tcl
+create_clock -add -name sys_clk_pin -period 10.00 -waveform {0 5} [get_ports i_clk]
+```
+
+Sobre el diseño en Vivado se corrió el `Report Timing Summary`, que no reporta ninguna violación:
+
+![alt text](/assets/timing_summary.png)
+
+El slack (tiempo disponible - tiempo consumido) de setup y de hold aparece como infinito porque el diseño no tiene ningún camino
+registro a registro. Los tres registros alimentan una ALU puramente combinacional cuya salida
+va directo a los pines, así que todos los caminos empiezan o terminan en un puerto y quedan
+sin restringir al no haberse declarado `set_input_delay` / `set_output_delay`. Lo único que se
+verifica contra el reloj es el ancho de pulso, con 4,5 ns de margen sobre los 5 ns del
+semiperíodo.
+
+Por eso el dato relevante no es el slack sino el retardo del camino crítico, que va desde el
+registro `r_b` hasta el LED más significativo atravesando la cadena de acarreo del sumador.
+Para aislarlo se pidió el peor camino de todos los que terminan en los pines de salida:
+
+```tcl
+report_timing -to [get_ports o_leds*] -delay_type max -max_paths 1
+```
+
+![alt text](/assets/timing_path.png)
+
+La columna `Path(ns)` del reporte acumula desde el flanco del reloj, por eso termina en
+16,962 ns. Los primeros 5,158 ns son la distribución del clock desde el pin W5 hasta el
+registro (IBUF, BUFG y ruteo), común a todos los caminos. El retardo del dato propiamente
+dicho son los 11,803 ns restantes, que se reparten así:
+
+| Tramo del camino crítico | Retardo |
+|---|---|
+| Clock-to-Q del registro (FDRE) | 0,518 ns |
+| Lógica de la ALU y ruteo interno (LUT2, 2×CARRY4, LUT6, MUXF7) | 7,590 ns |
+| Buffer de salida hacia el pin (OBUF) | 3,695 ns |
+| **Total** | **11,803 ns** |
+
+De esos 11,803 ns, 3,695 ns corresponden al buffer de salida hacia el pin físico, que no forma
+parte de ningún lazo sincrónico y no condiciona la frecuencia de trabajo, menos aún cuando el
+destino son LEDs. El tramo que sí importa es el interno, 8,108 ns desde el flanco de clock
+hasta la entrada del buffer, por debajo de los 10 ns del período. Es decir que si el resultado
+de la ALU se registrara en lugar de salir directo a los pines, el diseño seguiría cerrando
+timing a 100 MHz con alrededor de 1,9 ns de margen.
 
 ## 8. Conclusiones
 
