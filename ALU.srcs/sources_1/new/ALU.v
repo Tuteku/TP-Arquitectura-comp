@@ -91,7 +91,7 @@ module alu_top #(
     reg [NB_DATA-1:0] r_a;
     reg [NB_DATA-1:0] r_b;
     
-    initial
+    initial //quitar
     begin
         r_op = {NB_OP{1'b0}};
         r_a = {NB_DATA{1'b0}};

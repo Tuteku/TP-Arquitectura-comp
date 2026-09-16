@@ -6,7 +6,8 @@
 - De la Mata, Nicolás
 - Quispe, Mateo
 
--Github: https://github.com/Tuteku/TP-Arquitectura-comp
+Github: https://github.com/Tuteku/TP-Arquitectura-comp 
+
 ---
 
 ## 1. Objetivo
