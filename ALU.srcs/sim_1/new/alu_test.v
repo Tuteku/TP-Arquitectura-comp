@@ -32,7 +32,6 @@ module tb_alu_top;
     reg i_load_c;
     reg i_clk;
     reg i_reset;
-    integer i = 0;
     wire [NB_DATA-1:0] o_leds;
     
     alu_top #(
