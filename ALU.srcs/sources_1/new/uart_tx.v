@@ -3,9 +3,9 @@
 // Company: 
 // Engineer: 
 // 
-// Create Date: 09/09/2026 06:11:11 PM
+// Create Date: 09/24/2026 07:01:52 PM
 // Design Name: 
-// Module Name: uart_rx
+// Module Name: uart_tx
 // Project Name: 
 // Target Devices: 
 // Tool Versions: 
@@ -20,17 +20,18 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 
-module uart_rx #(
+module uart_tx #(
     parameter NB_DATA = 8,
     parameter SB_TICK = 16
 )
 (
-    input wire i_s_tick,
+    input wire [NB_DATA-1:0] i_data,
+    input wire i_tx_start,
     input wire i_clk,
-    input wire i_reset,
-    input wire i_rx,
-    output wire [NB_DATA-1:0] o_dout,
-    output wire o_rx_done_tick       
+    input wire i_s_tick,
+    input wire i_reset,   
+    output wire o_tx,
+    output wire o_tx_done      
 );    
     localparam [1:0] IDLE = 2'b00,
                      START = 2'b01,
@@ -43,26 +44,35 @@ module uart_rx #(
     reg [3 : 0] s_reg, s_next;
     reg [NB_N - 1: 0] n_reg, n_next;
     reg [NB_DATA-1 : 0] b_reg, b_next;
-    reg rx_done_tick;
+    reg o_tx_reg, o_tx_next;
+    reg tx_done_tick;
+    
         
     always @(*) begin
             state_next   = state_reg;
             s_next       = s_reg;
             n_next       = n_reg;
             b_next       = b_reg;
-            rx_done_tick = 1'b0;
+            o_tx_next    = o_tx_reg;
+            tx_done_tick = 1'b0;
     
         case (state_reg) 
-            IDLE : if (~i_rx) begin
-                        state_next = START;
-                        s_next = {4{1'b0}};
-                   end
+            IDLE : begin
+                        o_tx_next = {1'b1};
+                        if (i_tx_start) begin
+                            state_next = START;
+                            s_next = {4{1'b0}};
+                            b_next = i_data;
+                            o_tx_next = {1'b0};
+                        end
+                    end    
             START :  begin
-                         if(i_s_tick) begin
-                             if(s_reg == 7) begin
+                         o_tx_next = {1'b1};
+                         if(i_s_tick) begin                         
+                             if(s_reg == 15) begin
                                  state_next = DATA;
                                  s_next = {4{1'b0}};
-                                 n_next = {NB_N{1'b0}};
+                                 n_next = {NB_N{1'b0}};                              
                              end
                              else begin
                                  s_next = s_reg + 1;
@@ -70,15 +80,16 @@ module uart_rx #(
                          end                            
                      end
             DATA : begin
+                    o_tx_next = b_reg[0];               
                         if(i_s_tick) begin
                             if(s_reg == 15) begin
-                                s_next = {4{1'b0}};                               
-                                b_next = {i_rx, b_reg[NB_DATA-1:1]}; //concatenacion de datos.
+                                s_next = {4{1'b0}}; 
                                 if(n_reg == NB_DATA-1) begin
                                     state_next = STOP;
                                 end
                                 else begin
                                     n_next = n_reg + 1;
+                                    b_next = {1'b0, b_reg[NB_DATA-1:1]}; //concatenacion de datos.
                                 end                                
                             end
                             else begin
@@ -87,11 +98,12 @@ module uart_rx #(
                         end                                                                                                    
                     end                                               
             STOP :  begin
+                        o_tx_next = 1'b0;                    
                         if(i_s_tick) begin
                             if(s_reg == 15) begin
                                 state_next = IDLE;
                                 s_next = {4{1'b0}};
-                                rx_done_tick = 1'b1; 
+                                tx_done_tick = 1'b1; 
                             end
                             else begin
                                 s_next = s_reg + 1;
@@ -108,16 +120,18 @@ module uart_rx #(
             s_reg <= {4{1'b0}};
             n_reg <= {NB_N{1'b0}};
             b_reg <= {NB_DATA{1'b0}};
+            o_tx_reg <= {1'b1};
         end
         else begin
         state_reg <= state_next;
         s_reg <= s_next;
         n_reg <= n_next;
         b_reg <= b_next;
+        o_tx_reg <= o_tx_next;
         end
     end
     
-    assign o_dout = b_reg; 
-    assign o_rx_done_tick = rx_done_tick;
+    assign o_tx = o_tx_reg; 
+    assign o_tx_done = tx_done_tick;
     
 endmodule
