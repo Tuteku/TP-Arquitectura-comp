@@ -67,9 +67,9 @@ module uart_tx #(
                         end
                     end    
             START :  begin
-                         o_tx_next = {1'b1};
+                         o_tx_next = {1'b0};
                          if(i_s_tick) begin                         
-                             if(s_reg == 15) begin
+                             if(s_reg == SB_TICK -1) begin
                                  state_next = DATA;
                                  s_next = {4{1'b0}};
                                  n_next = {NB_N{1'b0}};                              
@@ -82,7 +82,7 @@ module uart_tx #(
             DATA : begin
                     o_tx_next = b_reg[0];               
                         if(i_s_tick) begin
-                            if(s_reg == 15) begin
+                            if(s_reg == SB_TICK -1) begin
                                 s_next = {4{1'b0}}; 
                                 if(n_reg == NB_DATA-1) begin
                                     state_next = STOP;
@@ -98,9 +98,9 @@ module uart_tx #(
                         end                                                                                                    
                     end                                               
             STOP :  begin
-                        o_tx_next = 1'b0;                    
+                        o_tx_next = 1'b1;                    
                         if(i_s_tick) begin
-                            if(s_reg == 15) begin
+                            if(s_reg == SB_TICK -1) begin
                                 state_next = IDLE;
                                 s_next = {4{1'b0}};
                                 tx_done_tick = 1'b1; 
