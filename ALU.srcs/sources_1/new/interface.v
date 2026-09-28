@@ -20,7 +20,7 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 
-module interface #(
+module uart_interface #(
     parameter NB_DATA = 8,
     parameter NB_OP = 6
 )
