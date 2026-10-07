@@ -41,7 +41,7 @@ module tb_uart_rx;
 
     always #5 clk = ~clk;   // 100 MHz
 
-    // tick cada 8 ciclos (en vez de 325, para que simule rapido)
+    // tick cada 8 ciclos (en vez de 325, para que simule rapido) Simular baudrate
     integer cnt = 0;
     always @(posedge clk) begin
         if (cnt == 7) begin
@@ -74,9 +74,9 @@ module tb_uart_rx;
         rx    = 1;
         reset = 1;
         data = 8'b01001011;
-        repeat (5) @(posedge clk);
+        #50;
         reset = 0;
-        repeat (5) @(posedge clk);
+        #50;
 
         // enviar 0x4B
         send_bit(0);                              // start
@@ -84,7 +84,7 @@ module tb_uart_rx;
             send_bit(data[i]);                   // datos, D0 primero
         send_bit(1);                              // stop
 
-        repeat (20) @(posedge clk);
+        #200;
         $display("Enviado 0x4B, recibido 0x%02h", dout);
         $finish;
     end

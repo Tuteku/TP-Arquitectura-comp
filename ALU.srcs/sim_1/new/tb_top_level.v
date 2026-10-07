@@ -64,7 +64,7 @@ module tb_top_level;
     task recv_byte (output [7:0] dato);
         integer i;
         begin
-            @(negedge tx);                  // start bit
+            wait (tx == 1'b0);                  // start bit
             #(BIT_NS + BIT_NS/2);           // caer en el medio de D0
             for (i = 0; i < 8; i = i + 1) begin
                 dato[i] = tx;
@@ -78,22 +78,18 @@ module tb_top_level;
     initial begin
         rx    = 1'b1;
         reset = 1'b1;
-        repeat (10) @(posedge clk);
+        #100;
         reset = 1'b0;
-        repeat (10) @(posedge clk);
+        #100;        
 
-        // arranca la lectura de la respuesta en paralelo
-        fork
-            recv_byte(resultado);
-            begin
-                send_byte(8'h05);                  // A
-                #(BIT_NS*2);
-                send_byte(8'h03);                  // B
-                #(BIT_NS*2);
-                send_byte({2'b00, 6'b100000});     // Op (el de suma de tu ALU)
-            end
-        join
-
+        send_byte(8'h05);
+        #(BIT_NS*2);
+        send_byte(8'h03);
+        #(BIT_NS*2);
+        send_byte({2'b00, 6'b100000});
+        
+        recv_byte(resultado);
+        
         $display("A=0x05  B=0x03  ->  respuesta=0x%02h (esperado 0x08)", resultado);
 
         #(BIT_NS*4);

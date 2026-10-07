@@ -60,7 +60,7 @@ module tb_interface;
             rx_done = 1;
             @(negedge clk);
             rx_done = 0;
-            repeat (3) @(negedge clk);
+            #30;
         end
     endtask
 
@@ -69,36 +69,34 @@ module tb_interface;
         tx_done = 0;
         data    = 8'h00;
         reset   = 1;
-        repeat (5) @(posedge clk);
+        #50;       
         reset = 0;
-        repeat (5) @(posedge clk);
+        #50;
 
         rx_byte(8'h05);                 // A
         rx_byte(8'h03);                 // B
-        rx_byte({2'b00, 6'b100000});    // Op (poner el de suma de tu ALU)
+        rx_byte({2'b00, 6'b100000});    // Op 
 
         // esperar el pulso de arranque del Tx
-        wait (tx_start == 1'b1);
-        $display("A=0x%02h  B=0x%02h  Op=0b%06b  ->  o_data_tx=0x%02h (esperado 0x08)",
-                 alu_a, alu_b, alu_op, data_tx);
+        @(posedge tx_start)        
+        $display("A=0x%02h  B=0x%02h  Op=0b%06b  ->  o_data_tx=0x%02h (esperado 0x08)", alu_a, alu_b, alu_op, data_tx);
 
         // simular que el Tx termino de transmitir
-        repeat (10) @(negedge clk);
+        #100;
         tx_done = 1;
         @(negedge clk);
         tx_done = 0;
 
         // segunda operacion: verifica que la FSM volvio a RX_A
-        repeat (5) @(negedge clk);
+        #50;        
         rx_byte(8'h10);
         rx_byte(8'h20);
         rx_byte({2'b00, 6'b100000});
 
-        wait (tx_start == 1'b1);
-        $display("A=0x%02h  B=0x%02h  Op=0b%06b  ->  o_data_tx=0x%02h (esperado 0x30)",
-                 alu_a, alu_b, alu_op, data_tx);
+        @(posedge tx_start);        
+        $display("A=0x%02h  B=0x%02h  Op=0b%06b  ->  o_data_tx=0x%02h (esperado 0x30)", alu_a, alu_b, alu_op, data_tx);
 
-        repeat (20) @(posedge clk);
+        #200;       
         $finish;
     end
 
