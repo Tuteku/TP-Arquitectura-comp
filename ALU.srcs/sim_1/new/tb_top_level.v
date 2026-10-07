@@ -64,7 +64,7 @@ module tb_top_level;
     task recv_byte (output [7:0] dato);
         integer i;
         begin
-            wait (tx == 1'b0);                  // start bit
+            @(negedge tx);                  // start bit
             #(BIT_NS + BIT_NS/2);           // caer en el medio de D0
             for (i = 0; i < 8; i = i + 1) begin
                 dato[i] = tx;
@@ -80,16 +80,22 @@ module tb_top_level;
         reset = 1'b1;
         #100;
         reset = 1'b0;
-        #100;        
+        #100;
 
-        send_byte(8'h05);
-        #(BIT_NS*2);
-        send_byte(8'h03);
-        #(BIT_NS*2);
-        send_byte({2'b00, 6'b100000});
-        
-        recv_byte(resultado);
-        
+        fork
+            // escucha la respuesta desde antes de que llegue
+            recv_byte(resultado);
+
+            // manda los tres bytes
+            begin
+                send_byte(8'h05);
+                #(BIT_NS*2);
+                send_byte(8'h03);
+                #(BIT_NS*2);
+                send_byte({2'b00, 6'b100000});
+            end
+        join
+
         $display("A=0x05  B=0x03  ->  respuesta=0x%02h (esperado 0x08)", resultado);
 
         #(BIT_NS*4);
