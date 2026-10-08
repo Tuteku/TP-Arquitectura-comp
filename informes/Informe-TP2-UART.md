@@ -20,13 +20,14 @@ Se utilizó una **Digilent Basys3** (Artix-7 `xc7a35tcpg236-1`) y **Vivado 2025.
 
 ## 2. Descripción general
 
-El sistema se dividió en seis módulos:
+El sistema se dividió en siete módulos, siguiendo el esquema de la consigna:
 
 - **baud_rate_generator**: genera un pulso (`tick`) a 16 veces la velocidad de transmisión.
 - **uart_rx**: receptor. Detecta el bit de start, sobremuestrea cada bit y arma el byte.
 - **uart_tx**: transmisor. Serializa un byte agregando los bits de start y stop.
-- **uart_interface**: máquina de estados que guarda los tres bytes recibidos y ordena la transmisión del resultado.
-- **alu**: la ALU del trabajo anterior, sin modificaciones.
+- **uart_interface**: circuito de interfaz con **buffer + flags**. Guarda el último byte recibido y el próximo byte a transmitir, e indica su estado con las banderas `rx_empty` y `tx_full`.
+- **top_uart_alu**: bloque ALU del esquema. Una máquina de estados lee A, B y el opcode desde la interfaz, los guarda en registros y escribe el resultado de vuelta.
+- **alu**: la ALU del trabajo anterior, sin modificaciones, instanciada dentro de `top_uart_alu`.
 - **top_level**: instancia y conecta los módulos anteriores.
 
 ![Diagrama de bloques](/assets/esquema_uart.png)
@@ -135,43 +136,103 @@ o_tx_next = b_reg[0];
 b_next = {1'b0, b_reg[NB_DATA-1:1]};
 ```
 
-## 6. Interfaz con la ALU (`uart_interface`)
+## 6. Circuito de interfaz (`uart_interface`)
 
 ```verilog
 module uart_interface #(
+    parameter NB_DATA = 8
+)
+(
+    input  wire               i_clk,
+    input  wire               i_reset,
+    // lado UART
+    input  wire [NB_DATA-1:0] i_rx_data,   // d_out del Rx
+    input  wire               i_rx_done,
+    input  wire               i_tx_done,
+    output wire [NB_DATA-1:0] o_tx_data,   // d_in del Tx
+    output wire               o_tx_start,
+    // lado ALU
+    output wire [NB_DATA-1:0] o_r_data,
+    input  wire               i_rd,
+    output wire               o_rx_empty,
+    input  wire [NB_DATA-1:0] i_w_data,
+    input  wire               i_wr,
+    output wire               o_tx_full
+);
+```
+
+El receptor y el transmisor avisan con pulsos de un ciclo (`rx_done`, `tx_done`). Si el módulo que los consume no está en el estado justo en ese ciclo, el evento se pierde. La interfaz desacopla ambos lados con dos buffers de una palabra, cada uno con un flip-flop de bandera que convierte el pulso en un nivel que se mantiene hasta que el dato se consume:
+
+| Buffer | Se llena con | Se vacía con | Bandera hacia la ALU |
+|---|---|---|---|
+| RX (`rx_buf`, `rx_flag`) | `i_rx_done`, guardando `i_rx_data` | `i_rd` | `o_rx_empty = ~rx_flag` |
+| TX (`tx_buf`, `tx_flag`) | `i_wr`, guardando `i_w_data`, solo si el buffer está libre | `i_tx_done` | `o_tx_full = tx_flag` |
+
+```verilog
+// Buffer RX: se llena con rx_done, se vacía con rd
+if (i_rx_done) begin
+    rx_buf  <= i_rx_data;
+    rx_flag <= 1'b1;
+end
+else if (i_rd) begin
+    rx_flag <= 1'b0;
+end
+// Buffer TX: se llena con wr, se vacía con tx_done
+if (i_wr && !tx_flag) begin
+    tx_buf  <= i_w_data;
+    tx_flag <= 1'b1;
+end
+else if (i_tx_done) begin
+    tx_flag <= 1'b0;
+end
+```
+
+- Si llegan `i_rx_done` e `i_rd` en el mismo ciclo, tiene prioridad la escritura, para no perder el byte nuevo.
+- Un `i_wr` con el buffer de TX lleno se ignora, así no se pisa un byte que todavía no se transmitió.
+- `o_tx_start` es directamente `tx_flag`. El `uart_tx` solo mira `i_tx_start` en `IDLE`, y la bandera baja con `tx_done` en el mismo flanco en que el transmisor vuelve a `IDLE`, así que cada byte se transmite una sola vez.
+
+## 7. Bloque ALU (`top_uart_alu`)
+
+```verilog
+module top_uart_alu #(
     parameter NB_DATA = 8,
     parameter NB_OP   = 6
 )
 (
-    input  wire [NB_DATA-1:0] i_data,
-    input  wire               i_rx_done,
     input  wire               i_clk,
-    input  wire               i_tx_done,
     input  wire               i_reset,
-    input  wire [NB_DATA-1:0] i_data_alu,
-    output wire [NB_DATA-1:0] o_data_tx,
-    output wire               o_tx_start,
-    output wire [NB_DATA-1:0] o_alu_a,
-    output wire [NB_DATA-1:0] o_alu_b,
-    output wire [NB_OP-1:0]   o_alu_op
+    input  wire [NB_DATA-1:0] i_r_data,
+    input  wire               i_rx_empty,
+    input  wire               i_tx_full,
+    output wire               o_rd,
+    output wire [NB_DATA-1:0] o_w_data,
+    output wire               o_wr
 );
 ```
 
-Reemplaza a los registros con enable del `alu_top` del trabajo anterior: en lugar de los botones, cada pulso `i_rx_done` carga el byte recibido en el registro que corresponde según el orden de llegada.
+Reemplaza a los registros con enable del `alu_top` del trabajo anterior. En lugar de los botones, una máquina de estados toma cada byte disponible en la interfaz y lo carga en el registro que corresponde según el orden de llegada. La salida de la `alu` instanciada adentro es `o_w_data`.
 
 | Estado | Acción | Transición |
 |---|---|---|
-| `RX_A` | Guarda el primer byte en `reg_a` | A `RX_B` con `i_rx_done` |
-| `RX_B` | Guarda el segundo byte en `reg_b` | A `RX_OP` con `i_rx_done` |
-| `RX_OP` | Guarda los 6 bits bajos del tercer byte en `reg_op` | A `TX_SEND` con `i_rx_done` |
-| `TX_SEND` | Copia la salida de la ALU en `data_tx` y genera `tx_start` | A `TX_WAIT` |
-| `TX_WAIT` | Espera el fin de la transmisión | A `RX_A` con `i_tx_done` |
+| `RX_A` | Guarda `i_r_data` en `reg_a` y genera `rd` | A `RX_B` cuando `i_rx_empty = 0` |
+| `RX_B` | Guarda `i_r_data` en `reg_b` y genera `rd` | A `RX_OP` cuando `i_rx_empty = 0` |
+| `RX_OP` | Guarda los 6 bits bajos de `i_r_data` en `reg_op` y genera `rd` | A `TX_SEND` cuando `i_rx_empty = 0` |
+| `TX_SEND` | Genera `wr` con el resultado de la ALU en `o_w_data` | A `RX_A` cuando `i_tx_full = 0` |
 
-El estado `TX_SEND` existe para darle un ciclo a la ALU: al salir de `RX_OP` el opcode recién se escribe en `reg_op`, por lo que el resultado correcto aparece en el ciclo siguiente. Sin este estado se transmitiría el resultado con el opcode anterior.
+El estado `TX_SEND` existe para darle un ciclo a la ALU: al salir de `RX_OP` el opcode recién se escribe en `reg_op`, por lo que el resultado correcto aparece en el ciclo siguiente. Sin este estado se escribiría el resultado con el opcode anterior.
 
-## 7. Módulo `top_level`
+Ya no hace falta el estado `TX_WAIT` de la versión sin buffer. Una vez que el resultado queda en el buffer de TX, la máquina vuelve a `RX_A` y puede recibir la siguiente operación mientras el transmisor todavía está enviando.
 
-Solo conecta los módulos. Un único generador de baudios alimenta al receptor y al transmisor, la salida del receptor entra a la interfaz, la interfaz alimenta a la ALU y el resultado vuelve por el transmisor.
+`rd` y `wr` son **combinacionales**: se asignan en el `always @(*)` y salen directo por `o_rd` y `o_wr`. Si `rd` estuviera registrado, la bandera de RX bajaría un ciclo tarde, la máquina vería `i_rx_empty = 0` también en `RX_B` y cargaría el mismo byte como A y como B.
+
+```verilog
+assign o_rd = rd;
+assign o_wr = wr;
+```
+
+## 8. Módulo `top_level`
+
+Solo conecta los módulos según el esquema. Un único generador de baudios alimenta al receptor y al transmisor. El receptor y el transmisor se conectan a la interfaz (`d_out`, `rx_done`, `d_in`, `tx_start`, `tx_done`), y la interfaz se conecta con el bloque ALU (`r_data`, `rd`, `rx_empty`, `w_data`, `wr`, `tx_full`).
 
 ```verilog
 module top_level #(
@@ -191,16 +252,20 @@ module top_level #(
 
 Todos los parámetros se propagan a los submódulos, así que la velocidad o el ancho de datos se cambian desde un único lugar.
 
-## 8. Decisiones de diseño
+Los puertos del `top_level` no cambiaron respecto a la versión sin buffer, así que el archivo de restricciones y el test bench del sistema completo siguen sirviendo.
+
+## 9. Decisiones de diseño
 
 - **FSM con dos bloques `always`**: un bloque secuencial con los registros y el reset, y uno combinacional (`always @(*)`) que calcula el estado siguiente. Al inicio del bloque combinacional se asignan valores por defecto a todas las señales `_next`, lo que evita la inferencia de latches.
 - **El tick como habilitación, no como reloj**: todo el diseño trabaja con el reloj de 100 MHz y el tick se consulta con `if (i_s_tick)`. Así hay un único dominio de reloj y el análisis de tiempo cubre todo el diseño.
 - **Un único generador de baudios** compartido por receptor y transmisor.
 - **Salida del transmisor registrada**: `o_tx` sale de un flip-flop (`o_tx_reg`), lo que evita glitches que la PC podría interpretar como un bit de start. El reset la deja en `1`.
-- **Pulsos de un ciclo**: `o_rx_done_tick`, `o_tx_done` y `o_tx_start` duran un ciclo, por lo que cada byte produce exactamente una transición en la interfaz y cada orden de transmisión una sola trama.
+- **Pulsos de un ciclo convertidos en banderas**: `o_rx_done_tick` y `o_tx_done` duran un ciclo. La interfaz los convierte en las banderas `rx_empty` y `tx_full`, que se mantienen hasta que el dato se consume, así que el bloque ALU no necesita estar esperando en el ciclo exacto del pulso.
+- **Lectura y escritura combinacionales**: `rd` y `wr` se generan en el mismo ciclo en que la máquina de estados ve la bandera, de modo que cada byte se lee una sola vez.
+- **Separación UART / control**: la interfaz no conoce el protocolo A → B → Op. Solo almacena bytes, y el orden lo resuelve `top_uart_alu`. Así se puede cambiar el protocolo sin tocar la UART ni la interfaz.
 - **Reset síncrono** activo en alto.
 
-## 9. Interfaz con la placa
+## 10. Interfaz con la placa
 
 La Basys3 incluye un conversor USB-UART (FTDI FT2232), así que la comunicación usa el mismo cable USB de programación.
 
@@ -211,13 +276,13 @@ La Basys3 incluye un conversor USB-UART (FTDI FT2232), así que la comunicación
 | `i_reset` | T18 | BTNU |
 | `i_clk` | W5 | Oscilador de 100 MHz |
 
-## 10. Verificación
+## 11. Verificación
 
 | Test bench | Módulo | Qué verifica |
 |---|---|---|
 | `tb_uart_rx` | `uart_rx` | Recepción y armado de un byte |
 | `tb_uart_tx` | `uart_tx` | Serialización de un byte en la línea |
-| `tb_interface` | `uart_interface` | Secuencia A → B → Op y orden de transmisión |
+| `tb_interface` | `uart_interface` | Llenado y vaciado de los buffers de RX y TX y sus banderas |
 | `tb_top_level` | `top_level` | Una operación completa por la línea serie |
 
 En `tb_uart_rx` y `tb_uart_tx` el tick se genera dentro del propio banco cada 8 ciclos de reloj (en lugar de 325) para acortar la simulación. Como los módulos solo cuentan ticks, el comportamiento es el mismo:
@@ -236,7 +301,7 @@ always @(posedge clk) begin
 end
 ```
 
-### 10.1 Receptor
+### 11.1 Receptor
 
 El banco hace de transmisor. La `task` `send_bit` mantiene un valor en la línea durante 16 ticks:
 
@@ -271,7 +336,7 @@ $display("Enviado 0x4B, recibido 0x%02h", dout);
 
 Se eligió `0x4B` porque no es simétrico: si el receptor invirtiera el orden de los bits se obtendría `0xD2`.
 
-### 10.2 Transmisor
+### 11.2 Transmisor
 
 El banco hace de receptor. Se da un pulso de un ciclo en `i_tx_start` con el dato `0x4B`, se espera el bit de start, se avanzan 8 ticks hasta su centro y se toma una muestra cada 16 ticks, igual que el `uart_rx`:
 
@@ -290,47 +355,35 @@ wait (tx_done == 1'b1);
 $display("Enviado 0x%02h, en la linea 0x%02h", dato, recibido);
 ```
 
-### 10.3 Interfaz
+### 11.3 Interfaz
 
-El receptor y el transmisor se reemplazan por estímulos directos y la ALU por una suma (`alu_result = alu_a + alu_b`). La `task` `rx_byte` simula la llegada de un byte con un pulso de un ciclo en `i_rx_done`:
-
-```verilog
-task rx_byte (input [7:0] valor);
-    begin
-        @(negedge clk);
-        data    = valor;
-        rx_done = 1;
-        @(negedge clk);
-        rx_done = 0;
-        #30;
-    end
-endtask
-```
-
-Para mostrar el resultado un bloque `always`vigila `o_tx_start` e imprime los registros cada vez que se genera el pulso:
+El receptor, el transmisor y el bloque ALU se reemplazan por estímulos directos sobre los puertos de la interfaz. Cada evento es un pulso de un ciclo que cambia en el flanco de bajada, y el estado de los buffers se muestra en el ciclo siguiente, cuando ya quedó registrado:
 
 ```verilog
-always @(posedge clk) begin
-    if (tx_start)
-        $display("A=0x%02h  B=0x%02h  Op=0b%06b  ->  data_tx=0x%02h", alu_a, alu_b, alu_op, data_tx);
-end
+// RX: llega 0x4B del Rx
+@(negedge clk) begin rx_data = 8'h4B; rx_done = 1; end
+@(negedge clk) rx_done = 0;
+$display("RX lleno: r_data=0x%02h rx_empty=%b (esperado 0x4B, 0)", r_data, rx_empty);
+
+// la ALU lee el dato
+@(negedge clk) rd = 1;
+@(negedge clk) rd = 0;
+$display("RX leido: rx_empty=%b (esperado 1)", rx_empty);
+
+// TX: la ALU escribe 0x08
+@(negedge clk) begin w_data = 8'h08; wr = 1; end
+@(negedge clk) wr = 0;
+$display("TX lleno: tx_data=0x%02h tx_full=%b tx_start=%b (esperado 0x08, 1, 1)", tx_data, tx_full, tx_start);
+
+// el Tx termina de transmitir
+@(negedge clk) tx_done = 1;
+@(negedge clk) tx_done = 0;
+$display("TX libre: tx_full=%b tx_start=%b (esperado 0, 0)", tx_full, tx_start);
 ```
 
-Se ejecutan dos operaciones seguidas, `0x05 + 0x03` y `0x10 + 0x20`. Entre ambas se simula el fin de la transmisión con un pulso de un ciclo en `i_tx_done`:
+Se recorre el ciclo completo de cada buffer. En RX, `rx_done` llena el buffer y baja `rx_empty`, y `rd` lo vacía. En TX, `wr` llena el buffer y levanta `tx_full` y `tx_start`, y `tx_done` lo libera.
 
-```verilog
-rx_byte(8'h05);
-rx_byte(8'h03);
-rx_byte({2'b00, 6'b100000});
-
-#100;                       // simular que el Tx transmite
-@(negedge clk);
-tx_done = 1;
-```
-
-La segunda operación comprueba que la máquina vuelve a `RX_A` después de `TX_WAIT`.
-
-### 10.4 Sistema completo
+### 11.4 Sistema completo
 
 El `top_level` se prueba solo a través de `i_rx` y `o_tx`, a 2 Mbaudios para acortar la simulación. La duración de un bit se calcula igual que en el generador de baudios, para tener en cuenta el truncamiento de la división:
 
@@ -376,6 +429,8 @@ El envío y la recepción corren en paralelo usando dos bloques `initial`. En Ve
 initial begin
     recv_byte(resultado);
     $display("A=0x05  B=0x03  ->  respuesta=0x%02h (esperado 0x08)", resultado);
+    #(BIT_NS*2);
+    $finish;
 end
 
 // manda los tres bytes
@@ -392,14 +447,18 @@ initial begin
     #(BIT_NS*2);
     send_byte({2'b00, 6'b100000});
 
-    #(BIT_NS*6);
+    // timeout: si la respuesta no llega, corta igual
+    #(BIT_NS*30);
+    $display("TIMEOUT: no llego respuesta por tx");
     $finish;
 end
 ```
 
-Esto es necesario porque el receptor genera `o_rx_done_tick` en la mitad del bit de stop, y el transmisor empieza a responder antes de que termine `send_byte`. Si `recv_byte` se llamara después del envío, en el mismo bloque, se perdería el flanco de bajada del start. Al estar en su propio `initial`, `recv_byte` queda esperando el `@(negedge tx)` desde el comienzo de la simulación; como `o_tx` permanece en 1 durante el reset y en reposo, el primer flanco de bajada que ve es el start de la respuesta. El bloque de envío espera `6` tiempos de bit antes del `$finish` para que la trama de respuesta se reciba completa y se ejecute el `$display`.
+Esto es necesario porque el receptor genera `o_rx_done_tick` en la mitad del bit de stop, y el transmisor empieza a responder antes de que termine `send_byte`. Si `recv_byte` se llamara después del envío, en el mismo bloque, se perdería el flanco de bajada del start. Al estar en su propio `initial`, `recv_byte` queda esperando el `@(negedge tx)` desde el comienzo de la simulación. Como `o_tx` permanece en 1 durante el reset y en reposo, el primer flanco de bajada que ve es el start de la respuesta.
 
-### 10.5 Resultados
+El `$finish` lo ejecuta el bloque receptor apenas termina de leer la respuesta, así que la simulación no depende de estimar cuánto tarda la trama de vuelta. En una primera versión el `$finish` estaba en el bloque de envío, 6 tiempos de bit después del último byte. Eso no alcanzaba: la respuesta dura 10 bits (4800 ns), así que la simulación terminaba en medio de la transmisión y el `$display` nunca se ejecutaba. El bloque de envío ahora solo actúa como timeout, por si la respuesta no llega nunca.
+
+### 11.5 Resultados
 
 `tb_uart_rx`: el byte recibido coincide con el enviado.
 
@@ -409,7 +468,7 @@ Esto es necesario porque el receptor genera `o_rx_done_tick` en la mitad del bit
 
 ![tb_uart_tx](/assets/tb_uart_tx.png)
 
-`tb_interface`: la operacion devuelve `0x08`, lo que confirma la secuencia de carga.
+`tb_interface`: las banderas `rx_empty`, `tx_full` y `tx_start` y los datos `r_data` y `tx_data` toman los valores esperados en cada paso.
 
 ![tb_interface](/assets/tb_interface.png)
 
@@ -417,12 +476,13 @@ Esto es necesario porque el receptor genera `o_rx_done_tick` en la mitad del bit
 
 ![tb_top_level](/assets/tb_top_level.png)
 
-## 11. Conclusiones
+## 12. Conclusiones
 
-Se implementó una UART completa (receptor, transmisor y generador de baudios) y se la usó para controlar la ALU del trabajo anterior desde una PC. Se validó cada módulo por separado y luego el sistema completo a través de la línea serie.
+Se implementó una UART completa (receptor, transmisor y generador de baudios) y se la usó para controlar la ALU del trabajo anterior desde una PC, con un circuito de interfaz de buffer + flags entre la UART y la ALU. Se validó cada módulo por separado y luego el sistema completo a través de la línea serie.
 
 - El sobremuestreo x16 con muestreo en el centro de cada bit permite recibir datos de un transmisor con un reloj desconocido, tolerando diferencias de velocidad de varios puntos porcentuales.
 - Usar el tick como habilitación mantiene todo el diseño en un único dominio de reloj.
 - Separar las FSM en dos bloques `always` con valores por defecto hace el código más claro y evita latches.
-- El estado `TX_SEND` muestra la importancia de saber en qué ciclo se actualiza cada registro.
+- Los buffers con bandera convierten los pulsos de un ciclo de la UART en niveles. Así el bloque que consume los datos no tiene que estar sincronizado con el instante exacto en que llega o sale cada byte, y puede recibir la siguiente operación mientras se transmite el resultado.
+- El estado `TX_SEND` y el uso de `rd` combinacional muestran la importancia de saber en qué ciclo se actualiza cada registro: un ciclo de diferencia hace que se use el opcode anterior o que se lea dos veces el mismo byte.
 - La parametrización permitió reutilizar la ALU sin cambios y simular el sistema completo a 2 Mbaudios modificando un solo parámetro.

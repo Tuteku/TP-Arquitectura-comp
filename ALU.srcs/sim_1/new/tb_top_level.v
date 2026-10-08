@@ -63,6 +63,8 @@ module tb_top_level;
     initial begin
         recv_byte(resultado);
         $display("A=0x05  B=0x03  ->  respuesta=0x%02h (esperado 0x08)", resultado);
+        #(BIT_NS*2);
+        $finish;
     end
 
     // manda los tres bytes
