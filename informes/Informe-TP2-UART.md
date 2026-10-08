@@ -369,27 +369,35 @@ task recv_byte (output [7:0] dato);
 endtask
 ```
 
-El envío y la recepción se lanzan en paralelo con un `fork ... join`:
+El envío y la recepción corren en paralelo usando dos bloques `initial`. En Verilog todos los `initial` arrancan en el instante cero y se ejecutan concurrentemente, por lo que no hace falta un `fork ... join`:
 
 ```verilog
-fork
-    // escucha la respuesta desde antes de que llegue
+// escucha la respuesta desde el instante cero, en paralelo
+initial begin
     recv_byte(resultado);
+    $display("A=0x05  B=0x03  ->  respuesta=0x%02h (esperado 0x08)", resultado);
+end
 
-    // manda los tres bytes
-    begin
-        send_byte(8'h05);
-        #(BIT_NS*2);
-        send_byte(8'h03);
-        #(BIT_NS*2);
-        send_byte({2'b00, 6'b100000});
-    end
-join
+// manda los tres bytes
+initial begin
+    rx    = 1'b1;
+    reset = 1'b1;
+    #100;
+    reset = 1'b0;
+    #100;
 
-$display("A=0x05  B=0x03  ->  respuesta=0x%02h (esperado 0x08)", resultado);
+    send_byte(8'h05);
+    #(BIT_NS*2);
+    send_byte(8'h03);
+    #(BIT_NS*2);
+    send_byte({2'b00, 6'b100000});
+
+    #(BIT_NS*6);
+    $finish;
+end
 ```
 
-Esto es necesario porque el receptor genera `o_rx_done_tick` en la mitad del bit de stop, y el transmisor empieza a responder antes de que termine `send_byte`. Si `recv_byte` se llamara después del envío, se perdería el flanco de bajada del start.
+Esto es necesario porque el receptor genera `o_rx_done_tick` en la mitad del bit de stop, y el transmisor empieza a responder antes de que termine `send_byte`. Si `recv_byte` se llamara después del envío, en el mismo bloque, se perdería el flanco de bajada del start. Al estar en su propio `initial`, `recv_byte` queda esperando el `@(negedge tx)` desde el comienzo de la simulación; como `o_tx` permanece en 1 durante el reset y en reposo, el primer flanco de bajada que ve es el start de la respuesta. El bloque de envío espera `6` tiempos de bit antes del `$finish` para que la trama de respuesta se reciba completa y se ejecute el `$display`.
 
 ### 10.5 Resultados
 

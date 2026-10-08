@@ -1,22 +1,6 @@
 `timescale 1ns / 1ps
 //////////////////////////////////////////////////////////////////////////////////
-// Company: 
-// Engineer: 
-// 
-// Create Date: 10/06/2026 03:22:50 PM
-// Design Name: 
 // Module Name: tb_top_level
-// Project Name: 
-// Target Devices: 
-// Tool Versions: 
-// Description: 
-// 
-// Dependencies: 
-// 
-// Revision:
-// Revision 0.01 - File Created
-// Additional Comments:
-// 
 //////////////////////////////////////////////////////////////////////////////////
 
 module tb_top_level;
@@ -75,6 +59,13 @@ module tb_top_level;
 
     reg [7:0] resultado;
 
+    // escucha la respuesta desde el instante cero, en paralelo
+    initial begin
+        recv_byte(resultado);
+        $display("A=0x05  B=0x03  ->  respuesta=0x%02h (esperado 0x08)", resultado);
+    end
+
+    // manda los tres bytes
     initial begin
         rx    = 1'b1;
         reset = 1'b1;
@@ -82,23 +73,13 @@ module tb_top_level;
         reset = 1'b0;
         #100;
 
-        fork
-            // escucha la respuesta desde antes de que llegue
-            recv_byte(resultado);
+        send_byte(8'h05);
+        #(BIT_NS*2);
+        send_byte(8'h03);
+        #(BIT_NS*2);
+        send_byte({2'b00, 6'b100000});
 
-            // manda los tres bytes
-            begin
-                send_byte(8'h05);
-                #(BIT_NS*2);
-                send_byte(8'h03);
-                #(BIT_NS*2);
-                send_byte({2'b00, 6'b100000});
-            end
-        join
-
-        $display("A=0x05  B=0x03  ->  respuesta=0x%02h (esperado 0x08)", resultado);
-
-        #(BIT_NS*4);
+        #(BIT_NS*6);
         $finish;
     end
 
