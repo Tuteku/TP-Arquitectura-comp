@@ -30,9 +30,11 @@ El sistema se dividió en siete módulos, siguiendo el esquema de la consigna:
 - **alu**: la ALU del trabajo anterior, sin modificaciones, instanciada dentro de `top_uart_alu`.
 - **top_level**: instancia y conecta los módulos anteriores.
 
-![Diagrama de bloques](/assets/esquema_uart.png)
+### 2.1 Diagrama de bloques
+![diagrama_uart](/assets/diagrama_uart.png)
 
-### 2.1 Formato de la trama y protocolo
+
+### 2.2 Formato de la trama y protocolo
 
 Se usó el formato **8N1** (un bit de start en `0`, ocho bits de datos empezando por el LSB, sin paridad y un bit de stop en `1`) a **19200 baudios**, es decir unos 52 µs por bit.
 
@@ -47,6 +49,8 @@ Se usó el formato **8N1** (un bit de start en `0`, ocho bits de datos empezando
 | 2 | PC → FPGA | Operando B |
 | 3 | PC → FPGA | Opcode (6 bits menos significativos) |
 | 4 | FPGA → PC | Resultado de la ALU |
+
+
 
 ## 3. Generador de baudios
 
@@ -97,6 +101,8 @@ El receptor usa 16 ticks por bit. Al detectar el flanco de bajada del start cuen
 | `DATA` | Cada 16 ticks desplaza `i_rx` dentro de `b_reg` | A `STOP` después del bit `NB_DATA-1` |
 | `STOP` | Espera 16 ticks | A `IDLE`, generando `o_rx_done_tick` |
 
+![fsm_uart_rx](/assets/fsm_uart_rx.png)
+
 `s_reg` cuenta ticks, `n_reg` cuenta bits y `b_reg` es el registro de desplazamiento. Como llega primero el LSB, cada bit entra por la izquierda y el registro se desplaza a la derecha:
 
 ```verilog
@@ -127,6 +133,8 @@ module uart_tx #(
 | `START` | `0` | A `DATA` después de 16 ticks |
 | `DATA` | `b_reg[0]` | Cada 16 ticks desplaza `b_reg`; a `STOP` después del bit `NB_DATA-1` |
 | `STOP` | `1` | A `IDLE` después de 16 ticks, generando `o_tx_done` |
+
+![fsm_uart_tx](/assets/fsm_uart_tx.png)
 
 El byte se copia en `b_reg` al recibir `i_tx_start`, así que `i_data` puede cambiar durante la transmisión. Siempre se transmite el bit 0 del registro, que se desplaza a la derecha después de cada bit:
 
@@ -167,6 +175,9 @@ El receptor y el transmisor avisan con pulsos de un ciclo (`rx_done`, `tx_done`)
 |---|---|---|---|
 | RX (`rx_buf`, `rx_flag`) | `i_rx_done`, guardando `i_rx_data` | `i_rd` | `o_rx_empty = ~rx_flag` |
 | TX (`tx_buf`, `tx_flag`) | `i_wr`, guardando `i_w_data`, solo si el buffer está libre | `i_tx_done` | `o_tx_full = tx_flag` |
+
+
+![interfaz_interna](/assets/interfaz_interna.png)
 
 ```verilog
 // Buffer RX: se llena con rx_done, se vacía con rd
@@ -219,9 +230,12 @@ Reemplaza a los registros con enable del `alu_top` del trabajo anterior. En luga
 | `RX_OP` | Guarda los 6 bits bajos de `i_r_data` en `reg_op` y genera `rd` | A `TX_SEND` cuando `i_rx_empty = 0` |
 | `TX_SEND` | Genera `wr` con el resultado de la ALU en `o_w_data` | A `RX_A` cuando `i_tx_full = 0` |
 
+
+![fsm_top_uart_alu](/assets/fsm_top_uart_alu.png)
+
 El estado `TX_SEND` existe para darle un ciclo a la ALU: al salir de `RX_OP` el opcode recién se escribe en `reg_op`, por lo que el resultado correcto aparece en el ciclo siguiente. Sin este estado se escribiría el resultado con el opcode anterior.
 
-Ya no hace falta el estado `TX_WAIT` de la versión sin buffer. Una vez que el resultado queda en el buffer de TX, la máquina vuelve a `RX_A` y puede recibir la siguiente operación mientras el transmisor todavía está enviando.
+Una vez que el resultado queda en el buffer de TX, la máquina vuelve a `RX_A` y puede recibir la siguiente operación mientras el transmisor todavía está enviando.
 
 `rd` y `wr` son **combinacionales**: se asignan en el `always @(*)` y salen directo por `o_rd` y `o_wr`. Si `rd` estuviera registrado, la bandera de RX bajaría un ciclo tarde, la máquina vería `i_rx_empty = 0` también en `RX_B` y cargaría el mismo byte como A y como B.
 
@@ -254,6 +268,10 @@ Todos los parámetros se propagan a los submódulos, así que la velocidad o el 
 
 Los puertos del `top_level` no cambiaron respecto a la versión sin buffer, así que el archivo de restricciones y el test bench del sistema completo siguen sirviendo.
 
+El esquemático RTL que genera Vivado confirma que las conexiones coinciden con el diagrama de bloques de la seccion 2.1:
+![esquema_uart](/assets/esquema_uart.png)
+
+
 ## 9. Decisiones de diseño
 
 - **FSM con dos bloques `always`**: un bloque secuencial con los registros y el reset, y uno combinacional (`always @(*)`) que calcula el estado siguiente. Al inicio del bloque combinacional se asignan valores por defecto a todas las señales `_next`, lo que evita la inferencia de latches.
@@ -275,6 +293,17 @@ La Basys3 incluye un conversor USB-UART (FTDI FT2232), así que la comunicación
 | `o_tx` | A18 | RsTx (FPGA → PC) |
 | `i_reset` | T18 | BTNU |
 | `i_clk` | W5 | Oscilador de 100 MHz |
+
+### 10.1 Prueba sobre la placa
+Para usar el sistema desde la PC se escribió un script en Python (uart_sim/alu_term.py, con la librería pyserial). Abre el puerto serie a 19200 baudios 8N1, pide la operación por teclado (por ejemplo ADD 5 3), manda los tres bytes y espera el byte de respuesta.
+```
+python3 alu_term.py /dev/ttyUSB1          # modo interactivo
+python3 alu_term.py /dev/ttyUSB1 --test   # batería de pruebas
+```
+Con `--test` el script recorre las ocho operaciones con seis pares de operandos cada una (incluyendo desbordes, números negativos y desplazamientos) y compara la respuesta de la placa con un modelo de referencia escrito en Python.
+
+    [GAP CAPTURA: prueba en la placa]
+    Programar la placa con el bitstream, correr python3 alu_term.py /dev/ttyUSB1 --test y capturar la terminal mostrando el 48/48 OK del final. Agregar también una captura corta del modo interactivo con dos o tres operaciones (por ejemplo ADD 5 3, SUB 3 5, SRA 0x80 2).
 
 ## 11. Verificación
 
@@ -475,6 +504,109 @@ El `$finish` lo ejecuta el bloque receptor apenas termina de leer la respuesta, 
 `tb_top_level`: la respuesta en `o_tx` es `0x08`, el resultado de 5 + 3.
 
 ![tb_top_level](/assets/tb_top_level.png)
+
+    [GAP CAPTURA: forma de onda de tb_uart_rx y tb_uart_tx]
+    Además de la consola, conviene una captura de la forma de onda de cada uno. En tb_uart_rx: rx, s_tick, u_dut/state_reg, u_dut/s_reg, u_dut/b_reg (hex) y rx_done, mostrando cómo b_reg se va llenando bit a bit. En tb_uart_tx: tx_start, u_dut/state_reg, u_dut/b_reg y tx. Para que el estado se lea mejor, en la ventana de ondas: clic derecho sobre state_reg → Radix → Unsigned (0 = IDLE, 1 = START, 2 = DATA, 3 = STOP).
+    
+## 12. Análisis de tiempo
+
+El análisis se dividió en dos partes. Primero se miró en simulación cuánto tiempo pasa cada dato en los buffers de la interfaz, que es lo que justifica haber usado buffer + flag en lugar de una FIFO. Después se corrió el análisis estático de tiempo de Vivado sobre el diseño implementado.
+
+### 12.1 Ocupación de los buffers: por qué alcanza con buffer + flag
+
+Una FIFO hace falta cuando el que consume los datos puede tardar más en leer un dato que lo que tarda en llegar el siguiente. En ese caso se van acumulando y hay que guardarlos en cola. Con un buffer de una sola palabra, el dato se pierde si llega un byte nuevo antes de que se haya leído el anterior (*overrun*). Para ver si eso puede pasar hay que comparar dos tiempos: cuánto tarda la FSM en leer un byte y cada cuánto llega uno nuevo.
+
+**Lado RX.** Cuando `uart_rx` genera `rx_done`, la interfaz guarda el byte y levanta `rx_flag` en el flanco siguiente. En el ciclo que sigue la FSM ya ve `rx_empty = 0` y, como `rd` es combinacional, en el próximo flanco guarda el byte en su registro y baja la bandera. El buffer queda lleno durante **un solo ciclo de reloj** (10 ns).
+
+```
+clk        _|‾|_|‾|_|‾|_|‾|_|‾|_
+rx_done    __|‾‾‾|______________
+rx_flag    ______|‾‾‾|__________      lleno 1 ciclo
+rd         ______|‾‾‾|__________      (combinacional, mismo ciclo)
+state      RX_A      | RX_B
+reg_a      ????      | 0x05
+```
+
+Por otro lado, un byte nuevo no puede llegar antes de que termine la trama completa: 10 bits a 19200 baudios son unos 520 µs, es decir 52 000 ciclos de reloj. Incluso con los bytes enviados uno pegado al otro, sin espacio entre tramas, entre dos `rx_done` pasan 10 tiempos de bit. El buffer está ocupado 1 ciclo de cada 52 000, así que nunca llega un byte con el anterior todavía sin leer.
+
+El único estado en el que la FSM no lee de RX es `TX_SEND`, que podría quedarse esperando si el buffer de TX siguiera lleno con el resultado anterior. Eso tampoco pasa. El resultado tarda 10 bits en transmitirse, y para volver a llegar a `TX_SEND` la FSM tiene que recibir tres bytes nuevos, que son 30 bits. Cuando llega el opcode siguiente, la respuesta anterior terminó de salir hace unos 20 tiempos de bit, así que `TX_SEND` dura siempre un ciclo.
+
+**Lado TX.** Por cada tres bytes que entran sale uno. La salida necesita 10 bits y las entradas ocupan 30, así que el transmisor siempre termina antes de que haya un resultado nuevo. Además, si por algún motivo `tx_full` siguiera en 1, la FSM se queda esperando en `TX_SEND` y no escribe, por lo que en este lado no se pierde nada aunque el buffer esté lleno. En RX no existe esa posibilidad de frenar al que envía, porque la UART no tiene control de flujo (RTS/CTS) y la PC manda cuando quiere. Por eso el lado crítico es el de recepción.
+
+| | Tiempo |
+|---|---|
+| Duración de un bit (19200 baudios) | 52 µs = 5200 ciclos |
+| Separación mínima entre dos `rx_done` | 10 bits = 520 µs = 52 000 ciclos |
+| Tiempo que el byte queda en `rx_buf` sin leer | 1 ciclo = 10 ns |
+| Duración de la respuesta en `tx` | 10 bits = 520 µs |
+| Tiempo entre dos escrituras en `tx_buf` | ≥ 30 bits = 1,56 ms |
+
+Una FIFO sería necesaria si el bloque que consume los datos pudiera estar ocupado durante más de una trama, por ejemplo un procesador atendiendo otras tareas, o si cada pedido generara más bytes de respuesta que los que recibe. En este diseño ninguna de las dos cosas ocurre, y la FIFO solo agregaría memoria, punteros de lectura y escritura y la lógica de lleno/vacío sin ningún beneficio.
+
+Para comprobarlo en simulación se armó una variante del `tb_top_level` que manda dos operaciones seguidas (`05 03 20` y `07 05 22`) con las seis tramas pegadas, sin pausas entre bytes, que es el peor caso posible. Las dos respuestas llegaron correctas (`0x08` y `0x02`), el buffer de RX nunca estuvo lleno más de un ciclo y nunca llegó un `rx_done` con la bandera todavía en 1.
+
+> **[GAP CAPTURA 1: handshake de un byte (zoom)]**
+> Cómo sacarla: correr `tb_top_level` en Vivado. En la ventana *Scope* abrir `tb_top_level → u_dut`, seleccionar las señales en *Objects* y arrastrarlas a la ventana de ondas (o clic derecho → *Add to Wave Window*). Agregar en este orden: `i_clk`, `u_uart_rx/o_rx_done_tick`, `u_uart_interface/rx_flag`, `rx_empty`, `rd`, `r_data` (hex), `u_top_uart_alu/state_reg`, `u_top_uart_alu/reg_a` (hex). Después *Run → Restart* y *Run All* para que se carguen desde el principio.
+> Hacer zoom sobre el primer `rx_done` hasta ver 5 o 6 ciclos de reloj y poner un marcador en la subida de `rx_flag` y otro en la bajada: la diferencia tiene que ser 10 ns. Se tiene que ver que en el mismo ciclo que `rx_flag = 1` aparece `rd = 1`, y en el flanco siguiente cambian `state_reg` (0 → 1) y `reg_a` (→ 05).
+
+> **[GAP CAPTURA 2: separación entre bytes (vista amplia)]**
+> Mismas señales más `i_rx` y `o_tx`. Alejar el zoom (*Zoom Fit*) hasta ver las tres tramas y la respuesta. Poner un marcador en el primer `rx_done` y otro en el segundo y mostrar la distancia (con el test a 2 Mbaudios y la pausa de 2 bits son 5760 ns = 576 ciclos). En la misma captura tiene que verse que `rx_flag` es solo una rayita en cada byte comparada con el espacio entre ellos.
+> Para el peor caso, sacar los `#(BIT_NS*2)` entre los `send_byte` y agregar una segunda operación (`07 05 22`, resultado `0x02`). La distancia entre `rx_done` baja a 4800 ns (480 ciclos, 10 bits) y sigue sin haber pérdida.
+
+> **[GAP CAPTURA 3: escritura del resultado y transmisión]**
+> Señales: `u_top_uart_alu/state_reg`, `u_top_uart_alu/reg_op`, `w_data` (hex), `wr`, `u_uart_interface/tx_flag` (= `tx_full` = `tx_start`), `u_uart_tx/state_reg`, `tx_done`, `o_tx`. Zoom en el paso de `RX_OP` a `TX_SEND`: se ve que `reg_op` cambia a `20`, en ese mismo ciclo `w_data` pasa a `08` y recién ahí se da `wr`. Esto muestra para qué está el estado `TX_SEND`. En una segunda captura más amplia, marcar que `tx_flag` baja en el mismo flanco en que el `uart_tx` vuelve a `IDLE` con `tx_done`.
+
+### 12.2 Análisis estático de tiempo
+
+El reloj está restringido igual que en el trabajo anterior, con el período de 10 ns del oscilador de la placa:
+
+```tcl
+create_clock -add -name sys_clk_pin -period 10.00 -waveform {0 5} [get_ports i_clk]
+```
+
+A diferencia del TP1, ahora el diseño sí tiene caminos de registro a registro, porque el resultado de la ALU ya no va a los LEDs sino que se guarda en `tx_buf`. Por eso el slack de setup deja de ser infinito y pasa a ser un número que se puede analizar. En el TP1 se había estimado que, si la salida de la ALU se registrara, el diseño seguiría cerrando a 100 MHz con alrededor de 1,9 ns de margen. Este análisis permite comprobarlo.
+
+Después de la implementación se corrió el `Report Timing Summary`:
+
+> **[GAP CAPTURA 4: Timing Summary]**
+> Cómo sacarla: *Run Implementation* → *Open Implemented Design* → en el *Flow Navigator*, *Report Timing Summary* (dejar las opciones por defecto) → OK. Capturar la tabla *Design Timing Summary* con WNS, TNS, WHS, THS y WPWS, y el mensaje *All user specified timing constraints are met*.
+
+![Timing summary](/assets/tp2_timing_summary.png)
+
+| Métrica | Valor |
+|---|---|
+| WNS (peor slack de setup) | __,___ ns |
+| TNS | 0,000 ns |
+| WHS (peor slack de hold) | __,___ ns |
+| THS | 0,000 ns |
+| Endpoints que fallan | 0 |
+
+El camino crítico debería ser el que sale de los registros de operandos (`reg_a`, `reg_b` o `reg_op`), atraviesa la ALU y termina en la entrada de `tx_buf`, porque es el único con lógica combinacional de varios niveles. Los demás caminos (contadores de ticks, máquinas de estados, banderas) tienen     uno o dos niveles de lógica.
+
+> **[GAP CAPTURA 5: detalle del camino crítico]**
+> En la pestaña *Timing* que queda abierta: *Intra-Clock Paths → sys_clk_pin → Setup* y doble clic sobre el primer camino (el de menor slack). Capturar el detalle con *Source*, *Destination*, *Data Path Delay*, *Logic Levels* y la tabla de retardos. Verificar que el origen sea `u_top_uart_alu/reg_*_reg[...]` y el destino `u_uart_interface/tx_buf_reg[...]`; si no lo es, ajustar el párrafo anterior.
+> Equivalente por consola Tcl: `report_timing -delay_type max -max_paths 1 -name camino_critico`.
+> Opcional: clic derecho sobre el camino → *Schematic*, para mostrar las LUT y los CARRY4 por los que pasa.
+
+![Camino crítico](/assets/tp2_timing_path.png)
+
+| Tramo del camino crítico | Retardo |
+|---|---|
+| Clock-to-Q del registro de origen | __,___ ns |
+| Lógica de la ALU y ruteo | __,___ ns |
+| Setup del registro de destino (`tx_buf`) | __,___ ns |
+| **Data path delay** | **__,___ ns** |
+
+Con el peor slack se puede calcular la frecuencia máxima a la que funcionaría el diseño:
+
+```
+f_max = 1 / (T - WNS) = 1 / (10 ns - __,___ ns) ≈ ___ MHz
+```
+
+Las entradas `i_rx` e `i_reset` y la salida `o_tx` aparecen en el reporte como puertos sin `set_input_delay` / `set_output_delay` (en la sección *Check Timing*). Es lo esperable, porque son señales asíncronas respecto del reloj de la FPGA: la línea serie cambia cuando quiere el emisor y el receptor la muestrea en el centro de cada bit, a miles de ciclos de distancia de cualquier flanco. No tiene sentido restringirlas contra un reloj que no comparten.
+
+> **[GAP CAPTURA 6 (opcional): recursos utilizados]**
+> *Open Implemented Design → Report Utilization*. Capturar la tabla de *Slice LUTs* y *Slice Registers*. Sirve para mostrar lo chico que es el diseño, y como dato para la comparación con la FIFO: los dos buffers con sus banderas son 18 flip-flops, mientras que una FIFO de, por ejemplo, 4 posiciones por lado necesitaría 64 flip-flops de datos más los punteros.
 
 ## 12. Conclusiones
 
