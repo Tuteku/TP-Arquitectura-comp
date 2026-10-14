@@ -60,12 +60,12 @@ module tb_top_level;
     reg [7:0] resultado;
 
     // escucha la respuesta desde el instante cero, en paralelo
-    initial begin
-        recv_byte(resultado);
-        $display("A=0x05  B=0x03  ->  respuesta=0x%02h (esperado 0x08)", resultado);
-        #(BIT_NS*2);
-        $finish;
-    end
+   // initial begin
+   //    recv_byte(resultado);
+   //     $display("A=0x05  B=0x03  ->  respuesta=0x%02h (esperado 0x08)", resultado);
+   //     #(BIT_NS*8);
+   //     $finish;
+    //end
 
     // manda los tres bytes
     initial begin
@@ -78,6 +78,12 @@ module tb_top_level;
         send_byte(8'h05);
         #(BIT_NS*2);
         send_byte(8'h03);
+        #(BIT_NS*2);
+        send_byte({2'b00, 6'b100000});
+        #(BIT_NS*2);
+        send_byte(8'h07);
+        #(BIT_NS*2);
+        send_byte(8'h05);
         #(BIT_NS*2);
         send_byte({2'b00, 6'b100000});
 
