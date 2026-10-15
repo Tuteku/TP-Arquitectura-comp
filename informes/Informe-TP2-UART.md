@@ -298,12 +298,7 @@ La Basys3 incluye un conversor USB-UART (FTDI FT2232), así que la comunicación
 Para usar el sistema desde la PC se escribió un script en Python (uart_sim/alu_term.py, con la librería pyserial). Abre el puerto serie a 19200 baudios 8N1, pide la operación por teclado (por ejemplo ADD 5 3), manda los tres bytes y espera el byte de respuesta.
 ```
 python3 alu_term.py /dev/ttyUSB1          # modo interactivo
-python3 alu_term.py /dev/ttyUSB1 --test   # batería de pruebas
 ```
-Con `--test` el script recorre las ocho operaciones con seis pares de operandos cada una (incluyendo desbordes, números negativos y desplazamientos) y compara la respuesta de la placa con un modelo de referencia escrito en Python.
-
-    [GAP CAPTURA: prueba en la placa]
-    Programar la placa con el bitstream, correr python3 alu_term.py /dev/ttyUSB1 --test y capturar la terminal mostrando el 48/48 OK del final. Agregar también una captura corta del modo interactivo con dos o tres operaciones (por ejemplo ADD 5 3, SUB 3 5, SRA 0x80 2).
 
 ## 11. Verificación
 
