@@ -100,3 +100,88 @@ La DMEM se organiza como 4 bancos de 256 × 8 bits (un banco por byte de la pala
 
 **Justificación.** Soportarlos implicaría partir un acceso en dos ciclos o leer dos palabras, con un costo grande para un caso que los programas de prueba no necesitan. Para que no pase desapercibido, el modelo de referencia en Python (M4) marca como error cualquier acceso desalineado, así un test que lo provoque falla en simulación.
 
+---
+
+## Saltos y riesgos de control (#3)
+
+### D4. Todos los saltos se resuelven en EX
+
+**Contexto.** Hay que elegir en qué etapa se decide el siguiente PC para `beq`, `bne`, `jal` y `jalr`.
+
+| Opción | Instrucciones descartadas si salta | Costo |
+|---|---|---|
+| Resolver en EX | 2 | Ninguno extra: la comparación y el destino se calculan con valores que ya llegan con forwarding a EX |
+| Resolver en ID | 1 | Comparador de 32 bits y sumador PC+imm en ID, forwarding hacia ID, stalls nuevos y un camino crítico más largo en ID |
+
+Resolver en ID agrega stalls cuando el branch depende de la instrucción anterior, que es el caso típico de un bucle:
+
+```asm
+addi x1, x1, -1
+bne  x1, x0, loop    # con el salto en ID, x1 todavía se está calculando en EX: 1 stall
+```
+
+Si el productor es un `lw`, serían 2 stalls. Medido en el simulador con forwarding:
+
+| Programa | Saltos en EX | Saltos en ID | Mínimo sin riesgos |
+|---|---|---|---|
+| Bucle con `addi` justo antes del `bne` | 21 ciclos | 22 ciclos | 17 |
+| Mismo bucle con una instrucción entre el `addi` y el `bne` | 21 ciclos | 19 ciclos | 17 |
+
+**Decisión.** `beq`, `bne`, `jal` y `jalr` se resuelven en EX:
+
+| Instrucción | Condición | Destino | Calculado con |
+|---|---|---|---|
+| `beq` | `rs1 == rs2` | `PC + imm` | Comparador de igualdad sobre los operandos ya adelantados + sumador de destino |
+| `bne` | `rs1 != rs2` | `PC + imm` | Ídem |
+| `jal` | Siempre | `PC + imm` | Sumador de destino |
+| `jalr` | Siempre | `(rs1 + imm) & ~1` | ALU (suma con `ALUSrc = 1`), bit 0 forzado a 0 |
+
+`jal` y `jalr` escriben `PC + 4` en `rd`. Ese valor se calcula en IF (el mismo sumador que avanza el PC) y viaja por los latches hasta WB.
+
+**Justificación.**
+
+- Un único lugar donde se decide el siguiente PC y un único caso de flush (siempre las mismas dos etapas).
+- No hace falta forwarding hacia ID ni stalls especiales para branches.
+- No alarga ID, que ya tiene la lectura del banco de registros.
+- La comparación de igualdad se hace con un comparador dedicado en lugar de mirar si la resta de la ALU dio cero, así la ALU no necesita una salida `zero` y la decisión de salto no espera a la cadena de acarreo.
+
+**A futuro.** `jal` no lee registros, así que se podría resolver en ID sin stalls (1 instrucción descartada en vez de 2). Queda como mejora opcional para M3 si sobra tiempo; no cambia nada más del diseño.
+
+### D5. Predicción "no tomado" y flush
+
+**Decisión.** IF siempre busca `PC + 4`. Cuando una instrucción en EX resulta ser un salto tomado, en ese mismo flanco:
+
+| Qué | Valor que toma |
+|---|---|
+| PC | Destino del salto |
+| IF/ID | Burbuja (`valid = 0`) |
+| ID/EX | Burbuja (`valid = 0`, señales de control en 0) |
+| Flag de HALT pendiente | 0 (ver D9) |
+
+El salto en EX sigue su camino normal hacia MEM y WB (`jal`/`jalr` todavía tienen que escribir `rd`).
+
+Diagrama temporal de un `beq` tomado:
+
+| Instrucción | c1 | c2 | c3 | c4 | c5 | c6 | c7 | c8 |
+|---|---|---|---|---|---|---|---|---|
+| `beq` (salta) | IF | ID | **EX** | MEM | WB | | | |
+| PC + 4 | | IF | ~~ID~~ | | | | | |
+| PC + 8 | | | ~~IF~~ | | | | | |
+| destino | | | | IF | ID | EX | MEM | WB |
+
+Penalización: 2 ciclos por salto tomado, 0 si no se toma.
+
+**Burbujas con bit de válido.** Cada latch tiene un bit `valid`. Una instrucción con `valid = 0` no escribe registros ni memoria, no salta y no genera forwarding ni HALT, aunque los demás campos tengan cualquier valor. Se eligió esto en vez de cargar la instrucción NOP (`0x00000013`) porque:
+
+- distingue una burbuja de un `addi x0, x0, 0` que el programa tenía de verdad, lo que la interfaz necesita para mostrar el pipeline,
+- un solo bit por latch alcanza para anular la instrucción completa, sin tener que poner en cero cada señal de control.
+
+**Prioridades cuando coinciden eventos en el mismo ciclo:**
+
+1. Reset.
+2. Flush por salto tomado en EX (anula lo que haya en IF y en ID, aunque esté frenado).
+3. Stall por load-use (ver D6).
+4. Avance normal.
+
+**¿Hace falta forwarding hacia ID?** No con esta decisión: ID no compara registros. Haría falta solamente si en el futuro se mueve la decisión de branches a ID.
+
