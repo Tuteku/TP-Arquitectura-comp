@@ -26,9 +26,9 @@ TP-Arquitectura-comp/
 └── tps_anteriores/      TP1 y TP2 tal como se entregaron
 ```
 
-El proyecto de Vivado no se sube. Cada uno lo arma en `vivado/` (ignorada por git) agregando las fuentes de `rtl/`, `tb/` y `constraints/` sin copiarlas ("Add sources", desmarcando "Copy sources into project"). Así el repositorio tiene una sola copia de cada archivo y no hay conflictos con los archivos generados. Más adelante, en `scripts/`, va un `.tcl` que recrea el proyecto.
+El proyecto de Vivado no se sube. Cada uno lo crea en `vivado/` (ignorada por git) corriendo `source scripts/crear_proyecto.tcl` desde la consola Tcl de Vivado, parado en la raíz del repositorio. El script agrega las fuentes de `rtl/`, `tb/` y `constraints/` sin copiarlas, así el repositorio tiene una sola copia de cada archivo y no hay conflictos con los archivos generados. Un archivo nuevo entra al proyecto volviendo a correr el script.
 
-La ALU y la UART de los TP anteriores se copian a `rtl/` cuando arranque M1. `tps_anteriores/` no se modifica.
+La ALU del TP1 y la UART del TP2 están copiadas en `rtl/core/` y `rtl/uart/`, con sus test benches en `tb/`. La UART se usa sin cambios; la ALU se extiende en M1 (ver [datapath.md](datapath.md#control-de-la-alu)). `tps_anteriores/` no se modifica.
 
 ## Verilog
 

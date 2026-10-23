@@ -61,4 +61,4 @@ El avance se sigue con los milestones de GitHub:
 
 ## Herramientas
 
-Vivado 2025.2, Python 3. El proyecto de Vivado no se versiona: ver [convenciones](docs/convenciones.md#estructura-del-repositorio).
+Vivado 2025.2, Python 3. El proyecto de Vivado no se versiona: se crea con `source scripts/crear_proyecto.tcl` (ver [convenciones](docs/convenciones.md#estructura-del-repositorio)).
