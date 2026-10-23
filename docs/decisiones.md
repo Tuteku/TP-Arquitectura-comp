@@ -1,0 +1,102 @@
+# Decisiones de diseño
+
+Cada decisión tiene el contexto, las opciones que se consideraron, lo que se eligió y por qué. Las marcadas como **propuesta** se confirman al revisar el PR de M0; si alguna cambia, se edita acá y se anota la razón.
+
+| # | Decisión | Elección | Issue | Estado |
+|---|---|---|---|---|
+| D1 | Tamaño y mapa de las memorias | IMEM y DMEM de 256 palabras (1 KiB) cada una, separadas | #2 | Propuesta |
+| D2 | Implementación de las memorias | RAM distribuida inferida (lectura asíncrona) | #2 | Propuesta |
+| D3 | Accesos desalineados | No soportados; el hardware ignora los bits bajos | #2 | Propuesta |
+| D4 | Etapa donde se resuelven los saltos | EX para beq, bne, jal y jalr | #3 | Propuesta |
+| D5 | Riesgos de control | Predecir no tomado + flush de 2 instrucciones | #3 | Propuesta |
+| D6 | Riesgos de datos | Forwarding a EX + stall de load-use + bypass del banco | #4 | Propuesta |
+| D7 | Control de ejecución | Clock enable global, sin gating | #7 | Propuesta |
+| D8 | Reset y reprogramación | Reset de CPU por la Debug Unit + barrido de memorias | #7 | Propuesta |
+| D9 | Instrucción HALT | `ebreak` (`0x00100073`) y cualquier instrucción ilegal | #8 | Propuesta |
+| D10 | Programa sin HALT | IMEM limpia con ceros + watchdog | #8 | Propuesta |
+
+---
+
+## Memorias (#2)
+
+### D1. Tamaño y mapa de memoria
+
+**Contexto.** La consigna no fija tamaños. Los programas de prueba van a tener decenas de instrucciones y usar unas pocas palabras de datos.
+
+**Decisión.**
+
+| Memoria | Palabras | Bytes | Rango de direcciones | Índice de palabra |
+|---|---|---|---|---|
+| Instrucciones (IMEM) | 256 | 1 KiB | `0x000` a `0x3FF` | `pc[9:2]` |
+| Datos (DMEM) | 256 | 1 KiB | `0x000` a `0x3FF` | `addr[9:2]` |
+
+- Las dos memorias son independientes (arquitectura Harvard) y cada una arranca en la dirección 0. Eso evita el riesgo estructural entre IF y MEM.
+- El PC arranca en `0x00000000`.
+- Direccionamiento por byte y little-endian, como define RISC-V. Los bits `[1:0]` de una dirección eligen el byte dentro de la palabra.
+- Los bits por encima del 9 se ignoran: una dirección fuera de rango se repite sobre la memoria (`0x400` es lo mismo que `0x000`). No se detecta como error.
+
+**Justificación.** 256 instrucciones alcanzan con margen para cualquier programa de prueba razonable, y 1 KiB de datos permite probar arreglos chicos. El tamaño es un parámetro (`NB_ADDR = 8`), así que agrandarlo después es cambiar un número.
+
+### D2. Implementación: RAM distribuida inferida
+
+**Contexto.** En la Artix-7 hay dos opciones:
+
+| | RAM distribuida (LUTRAM) | Block RAM (IP o inferida) |
+|---|---|---|
+| Lectura | Asíncrona, el dato sale en el mismo ciclo | Síncrona, el dato sale después del flanco |
+| Encaje en el pipeline | Directo, como el datapath del libro | Hay que adelantar la dirección un ciclo |
+| Costo para 2 × 1 KiB | Del orden de pocos cientos de LUTs de 20 800 | 1 bloque de 36 Kb por memoria |
+| Puertos | 1 de escritura + varios de lectura | 2 puertos completos |
+
+**Impacto de la BRAM en IF y MEM (lo que pide analizar la issue).** Con lectura síncrona, si la dirección de la IMEM es el PC, la instrucción recién sale un ciclo después: es como agregar una etapa. La solución es conectar a la dirección el *siguiente PC* (la salida del multiplexor que elige PC+4, destino de salto o PC congelado), de modo que el PC y la BRAM capturan la misma dirección en el mismo flanco y el registro de salida de la BRAM pasa a ser la mitad "instrucción" de IF/ID. Eso trae tres consecuencias:
+
+- un stall ya no se resuelve solo congelando IF/ID: hay que volver a presentar la misma dirección o deshabilitar la BRAM,
+- un flush no puede escribir una NOP en el registro interno de la BRAM, así que depende de un bit de válido,
+- el camino del siguiente PC (que incluye la decisión de salto de EX) tiene que llegar a la BRAM antes del flanco, lo que probablemente lo vuelve crítico.
+
+En MEM pasa lo mismo con la dirección que calcula la ALU.
+
+**Decisión.** IMEM y DMEM como RAM distribuida inferida desde Verilog:
+
+```verilog
+always @(posedge i_clk) if (we) mem[waddr] <= wdata;  // escritura síncrona
+assign rdata = mem[raddr];                             // lectura asíncrona
+```
+
+**Justificación.** Se comporta exactamente como el datapath que diseñamos, así que el diagrama, el modelo de referencia y el hardware coinciden ciclo a ciclo. El costo en LUTs es chico para este tamaño. Si en M7 el análisis de tiempo muestra que la lectura de memoria es el camino crítico, la BRAM queda como alternativa documentada.
+
+**Puertos.**
+
+| Memoria | Escritura | Lectura 1 | Lectura 2 |
+|---|---|---|---|
+| IMEM | Debug Unit (carga del programa, con el procesador detenido) | IF | Debug Unit (opcional, para verificar la carga) |
+| DMEM | MEM cuando corre el procesador; Debug Unit cuando está detenido (limpieza) | MEM | Debug Unit (volcado) |
+
+La RAM distribuida tiene un solo puerto de escritura, así que en la DMEM la dirección y el dato de escritura pasan por un multiplexor que elige entre la etapa MEM y la Debug Unit. Mientras el procesador está detenido, la escritura de MEM está deshabilitada por el enable, así que nunca compiten.
+
+### D3. Accesos de distinto tamaño y desalineados
+
+La DMEM se organiza como 4 bancos de 256 × 8 bits (un banco por byte de la palabra), lo que da escritura por byte con una máscara de 4 bits.
+
+**Escritura (stores):**
+
+| Instrucción | `funct3` | Máscara según `addr[1:0]` | Dato escrito |
+|---|---|---|---|
+| `sb` | `000` | `0001 << addr[1:0]` | `rs2[7:0]` replicado en los 4 bytes |
+| `sh` | `001` | `0011 << {addr[1], 1'b0}` | `rs2[15:0]` replicado en las 2 mitades |
+| `sw` | `010` | `1111` | `rs2` |
+
+**Lectura (loads):** la memoria devuelve la palabra completa y un bloque de alineación elige el byte o la media palabra y la extiende:
+
+| Instrucción | `funct3` | Toma | Extensión |
+|---|---|---|---|
+| `lb` | `000` | byte `addr[1:0]` | signo |
+| `lh` | `001` | media palabra `addr[1]` | signo |
+| `lw` | `010` | palabra completa | no hace falta |
+| `lbu` | `100` | byte `addr[1:0]` | ceros |
+| `lhu` | `101` | media palabra `addr[1]` | ceros |
+
+**Desalineados.** RISC-V permite que una implementación no los soporte. Decisión: **no se soportan**. El hardware ignora los bits que deberían ser cero (`addr[1:0]` en `lw`/`sw`, `addr[0]` en `lh`/`lhu`/`sh`), o sea que alinea hacia abajo sin avisar.
+
+**Justificación.** Soportarlos implicaría partir un acceso en dos ciclos o leer dos palabras, con un costo grande para un caso que los programas de prueba no necesitan. Para que no pase desapercibido, el modelo de referencia en Python (M4) marca como error cualquier acceso desalineado, así un test que lo provoque falla en simulación.
+
