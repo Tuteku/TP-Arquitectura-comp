@@ -257,3 +257,72 @@ Cuando `stall = 1`: el PC y IF/ID no se actualizan y ID/EX recibe una burbuja.
 
 **Justificación.** Es el esquema clásico del libro, con un solo stall posible (load-use) y sin forwarding hacia ID gracias a D4. El bypass del banco evita depender de escribir en la primera mitad del ciclo, que en FPGA obligaría a usar el flanco negativo.
 
+---
+
+## Control de ejecución sin intervenir el clock (#7)
+
+### D7. Clock enable global
+
+**Contexto.** La consigna prohíbe intervenir el reloj. Cortar el reloj con una compuerta (clock gating) agrega skew entre el procesador y la Debug Unit y puede generar glitches si la habilitación cambia con el reloj en alto.
+
+**Decisión.** Un único reloj llega sin lógica a todos los flip-flops del diseño. La Debug Unit maneja una señal `cpu_enable` que entra al procesador como `i_enable` y habilita la carga de cada elemento de estado. Vivado la conecta al pin CE de los flip-flops (FDRE), así que no agrega lógica en el camino de datos.
+
+**Módulos que reciben `i_enable`:**
+
+| Elemento | Se actualiza cuando |
+|---|---|
+| PC | `enable && !stall` |
+| IF/ID | `enable && !stall` (o burbuja si hay flush o HALT pendiente) |
+| ID/EX | `enable` (burbuja si hay stall o flush) |
+| EX/MEM | `enable` |
+| MEM/WB | `enable` |
+| Banco de registros | `enable && reg_write && rd != 0` |
+| Memoria de datos | `enable && mem_write` |
+| Flag de HALT pendiente | `enable` |
+
+El banco y la DMEM también llevan el enable: así, con el procesador detenido, la instrucción que quedó en WB no reescribe su registro en cada ciclo y nada compite con las escrituras de la Debug Unit.
+
+**Modos:**
+
+| Modo | `cpu_enable` |
+|---|---|
+| Detenido | 0 |
+| Continuo | 1 hasta que el procesador avisa HALT (`o_halt`) o vence el watchdog |
+| Paso a paso | 1 durante exactamente un ciclo por cada comando de paso |
+
+En paso a paso, la FSM de la Debug Unit tiene un estado que dura un ciclo en el que `cpu_enable = 1`, igual que `rd` y `wr` en el TP2. Después vuelve a 0 y manda el volcado.
+
+La Debug Unit cuenta los ciclos con `cpu_enable = 1` (contador de 32 bits), que se informa en cada volcado.
+
+### D8. Reset y escritura de la memoria de programa
+
+**Resets.**
+
+| Señal | Origen | Qué reinicia |
+|---|---|---|
+| `i_reset` | Botón BTNU de la placa, síncrono | Todo el diseño: UART, Debug Unit y procesador |
+| `cpu_reset` | Debug Unit (comandos de carga y de reinicio) | Solo el procesador: PC = 0, `valid = 0` en los cuatro latches, banco de registros en 0, flag de HALT en 0, contador de ciclos en 0 |
+
+El procesador recibe `i_reset | cpu_reset`. Todos los resets son síncronos y activos en alto, con prioridad sobre el enable.
+
+Las memorias no se borran con reset (son RAM). La Debug Unit las limpia escribiendo ceros dirección por dirección, con el procesador detenido: 256 ciclos por memoria, unos 2,6 µs a 100 MHz.
+
+**Escritura de la memoria de programa.** La IMEM tiene un puerto de escritura que solo maneja la Debug Unit. La FSM garantiza que solo escribe con `cpu_enable = 0`. La lectura de IF usa un puerto de lectura separado, así que no hay multiplexor en el camino de búsqueda.
+
+**Secuencia del comando de carga:**
+
+1. `cpu_enable = 0`.
+2. `cpu_reset` durante un ciclo.
+3. Limpiar IMEM y DMEM con ceros.
+4. Recibir las N palabras y escribirlas en la IMEM desde la dirección 0.
+5. Responder a la PC.
+
+Esto responde las preguntas de la consigna sobre reprogramación:
+
+| ¿Hay que vaciar...? | Respuesta |
+|---|---|
+| La memoria de datos | Sí. Si no, un programa que lee antes de escribir depende del programa anterior, y el volcado mostraría restos. |
+| Los registros | Sí. Muchos programas asumen que arrancan en 0 (un acumulador, por ejemplo). Se hace con el reset en un ciclo. |
+| El pipeline | Sí, es la más importante. Instrucciones viejas que queden en los latches terminarían su recorrido y escribirían el estado del programa nuevo. También hay que volver el PC a 0 y borrar el flag de HALT pendiente, o el programa nuevo nunca empieza. |
+| La memoria de programa | No es necesario si el programa termina en HALT. Se limpia igual porque con D10 eso hace que un programa sin HALT se detenga solo. |
+
