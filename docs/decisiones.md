@@ -326,3 +326,53 @@ Esto responde las preguntas de la consigna sobre reprogramación:
 | El pipeline | Sí, es la más importante. Instrucciones viejas que queden en los latches terminarían su recorrido y escribirían el estado del programa nuevo. También hay que volver el PC a 0 y borrar el flag de HALT pendiente, o el programa nuevo nunca empieza. |
 | La memoria de programa | No es necesario si el programa termina en HALT. Se limpia igual porque con D10 eso hace que un programa sin HALT se detenga solo. |
 
+---
+
+## Instrucción de parada (#8)
+
+### D9. HALT
+
+**Codificación.**
+
+| Opción | Codificación | A favor | En contra |
+|---|---|---|---|
+| Opcode propio (`0xFFFFFFFF`) | Fuera de RV32I | Imposible de confundir | Un ensamblador estándar no lo genera |
+| `ebreak` | `0x00100073` | Es la instrucción de RISC-V para devolverle el control a un depurador; el toolchain oficial la reconoce | Ninguno para este trabajo |
+
+**Decisión.** HALT es `ebreak` (`0x00100073`). En el ensamblador se puede escribir `halt` o `ebreak`. Además, **cualquier instrucción que el decodificador no reconozca se trata como HALT**, incluida `0x00000000` (que RISC-V reserva como ilegal justamente para detectar ejecución de memoria vacía).
+
+**Etapa de detección.** El decodificador la detecta en ID. Desde ese momento:
+
+1. En el flanco siguiente se activa el flag `halt_pending`. Mientras está activo, el PC no avanza e IF/ID recibe burbujas: no entra ninguna instrucción nueva.
+2. La instrucción HALT sigue avanzando con su bit `halt = 1` y todas sus señales de escritura en 0.
+3. Cuando llega a MEM/WB, el procesador activa `o_halt = memwb_valid && memwb_halt`. En ese momento todas las instrucciones anteriores ya completaron WB y detrás solo hay burbujas: el pipeline está vacío.
+4. La Debug Unit ve `o_halt`, deja `cpu_enable = 0` y manda el volcado.
+
+| Instrucción | c1 | c2 | c3 | c4 | c5 | c6 | c7 |
+|---|---|---|---|---|---|---|---|
+| `add x3,x1,x2` | IF | ID | EX | MEM | WB | | |
+| `sw x3,0(x0)` | | IF | ID | EX | MEM | WB | |
+| `halt` | | | IF | ID | EX | MEM | WB → `o_halt` |
+| siguiente (se anula) | | | | ~~IF~~ | | | |
+| (burbujas) | | | | | ID | EX | MEM |
+
+**HALT especulativo.** Si el HALT entra detrás de un salto que resulta tomado, el flush lo anula y también borra `halt_pending` (D5). Así un HALT que nunca debió ejecutarse no detiene el procesador. Ejemplo típico:
+
+```asm
+loop: ...
+      bne x1, x0, loop
+      halt              # se busca mientras el bne está en EX; si salta, se descarta
+```
+
+**Paso a paso después del HALT.** Si llega un comando de paso o de correr con el programa ya terminado, la Debug Unit no habilita el procesador y responde con el volcado y el estado "terminado" (ver [protocolo.md](protocolo.md)).
+
+### D10. ¿Qué pasa si la memoria no tiene instrucción de parada?
+
+**Sin protección,** el PC sigue avanzando más allá del programa y ejecuta lo que haya en la IMEM: restos de un programa anterior o ceros. Como el índice usa solo 8 bits, al pasar la última palabra vuelve a la dirección 0 y el programa se repite indefinidamente. En modo continuo la Debug Unit nunca vería el final y la PC esperaría el volcado para siempre.
+
+**Con las decisiones de este diseño:**
+
+1. El comando de carga limpia la IMEM con ceros (D8), y `0x00000000` se trata como HALT (D9). Un programa sin HALT se detiene en la primera palabra después de su última instrucción, con el pipeline vaciado igual que con un HALT normal.
+2. Un **watchdog** en la Debug Unit cubre el caso que lo anterior no detecta: un bucle infinito dentro del propio programa. Si en modo continuo se superan `WATCHDOG_CYCLES` ciclos (parámetro, por defecto 2^20 ≈ 1 millón, unos 10 ms a 100 MHz), la Debug Unit detiene el procesador y manda el volcado con el estado "watchdog".
+
+El volcado indica por qué terminó la ejecución (HALT, instrucción ilegal o watchdog), así la interfaz puede avisar que el programa no tenía instrucción de parada.
