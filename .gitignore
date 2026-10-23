@@ -1,7 +1,9 @@
 # ==========================================
-#  Vivado - archivos generados (NO subir)
+#  Vivado - archivos generados (no subir)
 # ==========================================
+vivado/
 vivado_project/
+*.xpr
 *.srcs/utils_1/
 *.jou
 *.log
@@ -25,12 +27,28 @@ webtalk*
 usage_statistics*
 
 # ==========================================
-#  Icarus Verilog / GTKWave
+#  Simulación (Icarus, Verilator, GTKWave)
 # ==========================================
 *.vcd
+*.fst
 *.out
 a.out
-sim
+sim/
+obj_dir/
+tb/build/
+
+# ==========================================
+#  Software de PC (Python)
+# ==========================================
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Programas ensamblados: se generan desde sw/programas/*.asm
+sw/programas/*.hex
+sw/programas/*.lst
+
 # ==========================================
 #  Sistema operativo / editores
 # ==========================================
@@ -39,5 +57,4 @@ Thumbs.db
 *~
 *.swp
 .vscode/
-# Archivo .xpr
-*.xpr
+.idea/
