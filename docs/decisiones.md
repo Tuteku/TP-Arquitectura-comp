@@ -10,8 +10,8 @@ Cada decisión tiene el contexto, las opciones que se consideraron, lo que se el
 | D4 | Etapa donde se resuelven los saltos | EX para beq, bne, jal y jalr | #3 | Propuesta |
 | D5 | Riesgos de control | Predecir no tomado + flush de 2 instrucciones | #3 | Propuesta |
 | D6 | Riesgos de datos | Forwarding EX/MEM y MEM/WB a EX + stall de load-use + bypass del banco; x0 nunca se escribe ni se adelanta | #4 | Propuesta |
-| D7 | Control de ejecución | Clock enable global, sin gating | #7 | Propuesta |
-| D8 | Reset y reprogramación | Reset de CPU por la Debug Unit + barrido de memorias | #7 | Propuesta |
+| D7 | Control de ejecución | Clock enable global, sin gating; el procesador se congela solo con `o_halt`; paso = 1 ciclo | #7 | Propuesta |
+| D8 | Reset y reprogramación | Reset síncrono con prioridad sobre el enable + barrido de memorias; IMEM escrita solo por la Debug Unit con el procesador detenido | #7 | Propuesta |
 | D9 | Instrucción HALT | `ebreak` (`0x00100073`) y cualquier instrucción ilegal | #8 | Propuesta |
 | D10 | Programa sin HALT | IMEM limpia con ceros + watchdog | #8 | Propuesta |
 
@@ -400,34 +400,83 @@ assign o_rs1_data = (i_rs1 == 0)                ? 32'd0   :
 
 **Contexto.** La consigna prohíbe intervenir el reloj. Cortar el reloj con una compuerta (clock gating) agrega skew entre el procesador y la Debug Unit y puede generar glitches si la habilitación cambia con el reloj en alto.
 
+| Opción | Cómo detiene al procesador | Problema |
+|---|---|---|
+| Clock gating (`clk & enable`) | El procesador deja de recibir flancos | Prohibido por la consigna; skew, glitches y un segundo dominio de reloj |
+| BUFGCE (buffer de reloj con enable de la Artix-7) | Igual, pero sin glitches | Sigue siendo intervenir el reloj, y el procesador queda en otro árbol de reloj que la Debug Unit |
+| Clock enable | Todos reciben el reloj; cada registro decide si carga | Ninguno: es lógica sincrónica común |
+
 **Decisión.** Un único reloj llega sin lógica a todos los flip-flops del diseño. La Debug Unit maneja una señal `cpu_enable` que entra al procesador como `i_enable` y habilita la carga de cada elemento de estado. Vivado la conecta al pin CE de los flip-flops (FDRE), así que no agrega lógica en el camino de datos.
 
-**Módulos que reciben `i_enable`:**
+**Enable efectivo.** Dentro del procesador, los elementos de estado no usan `i_enable` directamente sino
 
-| Elemento | Se actualiza cuando |
+```verilog
+assign en = i_enable && !o_halt;   // o_halt = memwb_valid && memwb_halt
+```
+
+Así, cuando el HALT llega a MEM/WB, el procesador se congela solo en ese mismo ciclo, aunque la Debug Unit tarde en bajar `cpu_enable`. El HALT queda visible en MEM/WB para el volcado, `o_halt` se mantiene en 1 hasta el próximo reset y no hace falta que la Debug Unit reaccione en el mismo ciclo para que el estado sea correcto. Cuesta una compuerta.
+
+**Módulos que reciben el enable:**
+
+| Elemento | Módulo | Se actualiza cuando | Con el enable en 0 |
+|---|---|---|---|
+| PC | `cpu` | `en` y (salto tomado o `!stall && !halt_pending`) | Mantiene la dirección |
+| IF/ID | `cpu` | `en && !stall` (carga una burbuja si hay flush o HALT pendiente) | Mantiene la instrucción |
+| ID/EX | `cpu` | `en` (carga una burbuja si hay stall o flush) | Mantiene |
+| EX/MEM | `cpu` | `en` | Mantiene |
+| MEM/WB | `cpu` | `en` | Mantiene |
+| Flag `halt_pending` | `cpu` | `en` | Mantiene |
+| Banco de registros | `register_file` | Escribe si `en && reg_write && rd != 0` | No escribe; los puertos de lectura siguen andando |
+| Memoria de datos | `dmem` | Escribe desde MEM si `en && mem_write` | MEM no escribe; la Debug Unit puede escribir y leer |
+| Aviso de store a la Debug Unit | `cpu` (`o_dmem_write`) | `en && exmem_valid && exmem_mem_write` | 0, así el cálculo de `K` no cuenta stores repetidos |
+
+**No reciben el enable:**
+
+| Elemento | Por qué |
 |---|---|
-| PC | `enable && !stall` |
-| IF/ID | `enable && !stall` (o burbuja si hay flush o HALT pendiente) |
-| ID/EX | `enable` (burbuja si hay stall o flush) |
-| EX/MEM | `enable` |
-| MEM/WB | `enable` |
-| Banco de registros | `enable && reg_write && rd != 0` |
-| Memoria de datos | `enable && mem_write` |
-| Flag de HALT pendiente | `enable` |
+| IMEM | Solo la escribe la Debug Unit con el procesador detenido; la lectura de IF es combinacional |
+| Lógica combinacional (control, ALU, forwarding, riesgos, generador de inmediatos) | No guarda estado: sus salidas cambian, pero nadie las carga |
+| UART y `uart_interface` | Tienen que seguir recibiendo comandos con el procesador detenido |
+| Debug Unit | Es la que maneja el enable |
 
-El banco y la DMEM también llevan el enable: así, con el procesador detenido, la instrucción que quedó en WB no reescribe su registro en cada ciclo y nada compite con las escrituras de la Debug Unit.
+El banco y la DMEM también llevan el enable: así, con el procesador detenido, la instrucción que quedó en WB no reescribe su registro en cada ciclo y nada compite con las escrituras de la Debug Unit. Con el enable en 0 el estado completo queda congelado, por eso el volcado (que tarda miles de ciclos en salir por la UART) siempre muestra una foto coherente de un mismo ciclo.
 
 **Modos:**
 
-| Modo | `cpu_enable` |
-|---|---|
-| Detenido | 0 |
-| Continuo | 1 hasta que el procesador avisa HALT (`o_halt`) o vence el watchdog |
-| Paso a paso | 1 durante exactamente un ciclo por cada comando de paso |
+| Modo | Comando | `cpu_enable` | Termina cuando |
+|---|---|---|---|
+| Detenido | – (después de reset, carga o fin) | 0 | – |
+| Continuo | `R` | 1 | `o_halt = 1` o vence el watchdog |
+| Paso a paso | `S` | 1 durante exactamente un ciclo | Siempre después de un ciclo |
 
-En paso a paso, la FSM de la Debug Unit tiene un estado que dura un ciclo en el que `cpu_enable = 1`, igual que `rd` y `wr` en el TP2. Después vuelve a 0 y manda el volcado.
+**Modo continuo.**
 
-La Debug Unit cuenta los ciclos con `cpu_enable = 1` (contador de 32 bits), que se informa en cada volcado.
+1. Si nunca se cargó un programa, responde el error `0x03`. Si `o_halt = 1`, responde el volcado con estado "ya terminado" (`0x05`) sin habilitar nada.
+2. Pone en 0 el contador del watchdog y entra al estado RUN, donde `cpu_enable = (estado == RUN) && !o_halt`, combinacional como `rd` y `wr` en el TP2.
+3. Cada ciclo en RUN suma 1 al contador de ciclos y al del watchdog.
+4. Si `o_halt = 1`, sale a DUMP con estado HALT (`0x02`) o ilegal (`0x03`) según `o_halt_illegal`. Si el watchdog llega a `WATCHDOG_CYCLES`, sale a DUMP con estado watchdog (`0x04`).
+
+Después de un watchdog el programa no terminó, así que un nuevo `R` sigue desde donde quedó (con el watchdog en 0 otra vez) y un `S` avanza un ciclo más. Mientras corre no se atienden comandos; el watchdog garantiza que RUN siempre termina.
+
+**Modo paso a paso.** Un paso es **un ciclo de reloj**, no una instrucción: así se ve a cada instrucción avanzar por las etapas, y los stalls y flushes aparecen como burbujas en los latches.
+
+1. Mismos chequeos que en continuo (error `0x03` o estado `0x05`).
+2. La FSM pasa por el estado STEP, que dura un solo ciclo y en el que `cpu_enable = 1`.
+3. Vuelve a `cpu_enable = 0` y manda el volcado: estado paso (`0x01`), o HALT/ilegal si ese ciclo llevó el HALT a MEM/WB.
+
+```
+            ___     ___     ___     ___     ___
+i_clk   ___|   |___|   |___|   |___|   |___|   |___
+                    _______
+cpu_en  ___________|       |_______________________   estado STEP
+                            ^
+                            único flanco con enable: avanza el pipeline
+estado     IDLE    |  STEP |  DUMP ...
+```
+
+Desde la PC, para avanzar varios ciclos se mandan varios `S`. Cada uno tarda lo que tarda su volcado (unos 18 ms con K = 0), así que no hace falta un comando de "N pasos".
+
+**Contador de ciclos.** La Debug Unit cuenta los flancos en los que el procesador realmente avanzó, o sea con `cpu_enable && !o_halt` (contador de 32 bits). Se pone en 0 con `cpu_reset` y se informa en cada volcado.
 
 ### D8. Reset y escritura de la memoria de programa
 
@@ -435,22 +484,48 @@ La Debug Unit cuenta los ciclos con `cpu_enable = 1` (contador de 32 bits), que 
 
 | Señal | Origen | Qué reinicia |
 |---|---|---|
-| `i_reset` | Botón BTNU de la placa, síncrono | Todo el diseño: UART, Debug Unit y procesador |
-| `cpu_reset` | Debug Unit (comandos de carga y de reinicio) | Solo el procesador: PC = 0, `valid = 0` en los cuatro latches, banco de registros en 0, flag de HALT en 0, contador de ciclos en 0 |
+| `i_reset` | Botón BTNU de la placa | Todo el diseño: UART, Debug Unit y procesador |
+| `cpu_reset` | Debug Unit (comandos de carga y de reinicio) | Solo el procesador, más los registros de la Debug Unit que describen la ejecución |
 
-El procesador recibe `i_reset | cpu_reset`. Todos los resets son síncronos y activos en alto, con prioridad sobre el enable.
+El procesador recibe `i_reset | cpu_reset`. Todos los resets son síncronos y activos en alto, con **prioridad sobre el enable**: el procesador se resetea aunque esté detenido, que es justamente cuando la Debug Unit lo usa.
 
-Las memorias no se borran con reset (son RAM). La Debug Unit las limpia escribiendo ceros dirección por dirección, con el procesador detenido: 256 ciclos por memoria, unos 2,6 µs a 100 MHz.
+El botón es asíncrono respecto del reloj, así que en `top` pasa por un sincronizador de dos flip-flops antes de convertirse en `i_reset`. No hace falta antirrebote: un rebote solo repite el reset.
 
-**Escritura de la memoria de programa.** La IMEM tiene un puerto de escritura que solo maneja la Debug Unit. La FSM garantiza que solo escribe con `cpu_enable = 0`. La lectura de IF usa un puerto de lectura separado, así que no hay multiplexor en el camino de búsqueda.
+**Qué deja cada reset:**
+
+| Elemento | Valor después del reset | Lo resetea |
+|---|---|---|
+| PC | `0x00000000` | `i_reset`, `cpu_reset` |
+| `valid` de IF/ID, ID/EX, EX/MEM, MEM/WB | 0 (el resto de los campos no importa) | `i_reset`, `cpu_reset` |
+| `halt_pending` | 0 | `i_reset`, `cpu_reset` |
+| Banco de registros | Los 31 registros en 0 | `i_reset`, `cpu_reset` |
+| Contador de ciclos, índice máximo de store (`K`), watchdog | 0 | `i_reset`, `cpu_reset` |
+| Flag "hay programa cargado" de la Debug Unit | 0 | Solo `i_reset` (lo pone en 1 una carga) |
+| Estado de la FSM de la Debug Unit, UART | IDLE | Solo `i_reset` |
+| IMEM, DMEM | No cambian (son RAM) | Ninguno; se limpian con escrituras |
+
+Con `valid = 0` en todos los latches y `memwb_valid = 0`, `o_halt` vale 0 después del reset, así que el procesador puede volver a avanzar.
+
+Las memorias no se borran con reset. La Debug Unit las limpia escribiendo ceros dirección por dirección, con el procesador detenido: 256 ciclos por memoria, unos 2,6 µs a 100 MHz, nada comparado con lo que tarda en llegar un solo byte por la UART (87 µs).
+
+**Escritura de la memoria de programa.** La IMEM tiene un puerto de escritura que solo maneja la Debug Unit (`i_imem_we`, `i_imem_waddr` de 8 bits como índice de palabra, `i_imem_wdata`). La lectura de IF usa un puerto de lectura separado, así que no hay multiplexor en el camino de búsqueda. Dos cosas garantizan que la escritura nunca se cruce con una ejecución:
+
+- la FSM solo pasa por los estados de carga con `cpu_enable = 0`,
+- la carga empieza con `cpu_reset`, así que ninguna instrucción vieja queda en el pipeline.
+
+La Debug Unit arma cada palabra con un registro de 32 bits y un contador de bytes de 0 a 3 (little-endian, el primer byte recibido va a `[7:0]`). Al recibir el cuarto byte pulsa `i_imem_we` durante un ciclo con la dirección `i` e incrementa `i`.
 
 **Secuencia del comando de carga:**
 
 1. `cpu_enable = 0`.
 2. `cpu_reset` durante un ciclo.
-3. Limpiar IMEM y DMEM con ceros.
+3. Limpiar IMEM y DMEM con ceros (las dos a la vez, una dirección por ciclo).
 4. Recibir las N palabras y escribirlas en la IMEM desde la dirección 0.
-5. Responder a la PC.
+5. Marcar "hay programa cargado" y responder `K`.
+
+Al terminar no hace falta otro reset: el PC está en 0 y, como la lectura de la IMEM es asíncrona, en el primer ciclo con enable IF/ID ya carga la instrucción 0.
+
+**Comando de reiniciar (`X`):** pasos 1 a 3 pero limpiando solo la DMEM, y responde `K`. Sirve para volver a correr el mismo programa desde el principio sin mandarlo de nuevo.
 
 Esto responde las preguntas de la consigna sobre reprogramación:
 

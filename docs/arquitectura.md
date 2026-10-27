@@ -58,7 +58,7 @@ Es la frontera que permite desarrollar y probar el procesador sin la UART (M1 a 
 
 | Señal | Dirección | Ancho | Uso |
 |---|---|---|---|
-| `i_enable` | DU → CPU | 1 | Habilita todos los elementos de estado ([D7](decisiones.md#d7-clock-enable-global)) |
+| `i_enable` | DU → CPU | 1 | Habilita todos los elementos de estado; adentro se combina con `!o_halt` ([D7](decisiones.md#d7-clock-enable-global)) |
 | `i_cpu_reset` | DU → CPU | 1 | Reset del procesador ([D8](decisiones.md#d8-reset-y-escritura-de-la-memoria-de-programa)) |
 | `i_imem_we`, `i_imem_waddr`, `i_imem_wdata` | DU → CPU | 1, 8, 32 | Escritura de la memoria de programa |
 | `i_dbg_dmem_we`, `i_dbg_dmem_addr`, `i_dbg_dmem_wdata` | DU → CPU | 1, 8, 32 | Limpieza de la DMEM (solo con `i_enable = 0`) |

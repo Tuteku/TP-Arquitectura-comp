@@ -111,7 +111,7 @@ Con las decisiones de este diseño (forwarding, saltos en EX) los ejemplos del s
 | Bucle reordenado | 21 | 20 |
 | Sin dependencias | 10 | 9 |
 
-El contador de la Debug Unit cuenta flancos con `cpu_enable = 1`. `o_halt` se activa después del flanco en que el HALT entra a MEM/WB, así que el contador queda uno por debajo del número de ciclo en que el HALT está en WB. Para que esto se cumpla, `cpu_enable` tiene que bajar en el mismo ciclo en que la Debug Unit ve `o_halt` (salida combinacional de la FSM, como `rd` y `wr` en el TP2); si bajara un ciclo tarde, el HALT saldría de MEM/WB con un flanco de más.
+El contador de la Debug Unit cuenta flancos con `cpu_enable && !o_halt`, o sea los flancos en los que el procesador realmente avanzó. `o_halt` se activa después del flanco en que el HALT entra a MEM/WB, así que el contador queda uno por debajo del número de ciclo en que el HALT está en WB. Como el procesador se congela solo con `o_halt` (enable efectivo de [D7](decisiones.md#d7-clock-enable-global)), el resultado no depende de en qué ciclo baje `cpu_enable` la Debug Unit.
 
 ### Programas aleatorios
 
