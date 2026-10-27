@@ -124,12 +124,13 @@ Como el `$random` del TP1, pero a nivel de programa: un script genera secuencias
 | Escenario | Qué se verifica |
 |---|---|
 | Ping | Responde `K` |
-| Cargar | Responde `K`; la IMEM tiene las palabras en orden; la DMEM y los registros quedan en 0 |
-| Cargar con N inválido | Responde `E 0x02` y sigue aceptando comandos |
+| Cargar | Responde `K` y el XOR de los bytes del programa; la IMEM tiene las palabras en orden; la DMEM y los registros quedan en 0 |
+| Cargar con N inválido | Descarta los 4N bytes, responde `E 0x02`, no toca las memorias ni el programa anterior y sigue aceptando comandos |
 | Comando desconocido | Responde `E 0x01` |
 | Paso | Un volcado por comando; el contador de ciclos sube de a 1; los latches avanzan una etapa |
 | Correr | Volcado con estado HALT y el estado final igual al del modelo de referencia |
 | Correr después de terminar | Estado `0x05` y nada cambia |
+| Correr o Paso sin programa | Responde `E 0x03` después de un reset con BTNU |
 | Reiniciar | PC en 0, pipeline vacío, registros y DMEM en 0, IMEM intacta |
 | Programa sin HALT | Estado `0x03` (ilegal) |
 | Bucle infinito | Estado `0x04` (watchdog), con `WATCHDOG_CYCLES` reducido para la simulación |
