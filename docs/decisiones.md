@@ -9,7 +9,7 @@ Cada decisión tiene el contexto, las opciones que se consideraron, lo que se el
 | D3 | Accesos desalineados | No soportados ni detectados; el hardware ignora los bits bajos (datos y fetch) | #2 | Propuesta |
 | D4 | Etapa donde se resuelven los saltos | EX para beq, bne, jal y jalr | #3 | Propuesta |
 | D5 | Riesgos de control | Predecir no tomado + flush de 2 instrucciones | #3 | Propuesta |
-| D6 | Riesgos de datos | Forwarding a EX + stall de load-use + bypass del banco | #4 | Propuesta |
+| D6 | Riesgos de datos | Forwarding EX/MEM y MEM/WB a EX + stall de load-use + bypass del banco; x0 nunca se escribe ni se adelanta | #4 | Propuesta |
 | D7 | Control de ejecución | Clock enable global, sin gating | #7 | Propuesta |
 | D8 | Reset y reprogramación | Reset de CPU por la Debug Unit + barrido de memorias | #7 | Propuesta |
 | D9 | Instrucción HALT | `ebreak` (`0x00100073`) y cualquier instrucción ilegal | #8 | Propuesta |
@@ -266,6 +266,20 @@ Penalización: 2 ciclos por salto tomado, 0 si no se toma.
 | Bypass interno del banco de registros | Lectura en ID | Dependencia a distancia 3 (escritura y lectura en el mismo ciclo) |
 | Stall de un ciclo | Unidad de detección en ID | Load seguido de una instrucción que usa el dato |
 
+La *distancia* es cuántas instrucciones separan al productor del consumidor: distancia 1 es la instrucción inmediatamente siguiente. Con 5 etapas, el resultado se escribe en el banco en WB, tres ciclos después de que el consumidor a distancia 1 lo leyó en ID. Por eso hacen falta mecanismos para las distancias 1, 2 y 3, y desde la 4 el valor ya está en el banco.
+
+#### Caminos de forwarding
+
+| Camino | Origen | Destino | ¿Se implementa? | Por qué |
+|---|---|---|---|---|
+| EX/MEM → EX | `exmem_alu_result` o `exmem_pc4` | Operandos A y B de EX | Sí | Distancia 1 entre instrucciones que no son loads |
+| MEM/WB → EX | Salida del multiplexor de WB (ALU, dato leído o `PC + 4`) | Operandos A y B de EX | Sí | Distancia 2, y distancia 1 de un load después del stall |
+| WB → ID | Dato de escritura del banco | Lectura de rs1 y rs2 en ID | Sí, como bypass dentro del banco | Distancia 3 |
+| MEM/WB → MEM | Dato leído por un load | Dato a guardar de un store en MEM | No | Ahorraría el stall en `lw x1` / `sw x1`, un caso poco frecuente, a cambio de una unidad de forwarding más y un multiplexor en el camino de escritura de la DMEM. Se resuelve con el stall de load-use |
+| EX/MEM → ID, MEM/WB → ID | Resultados | Comparador de branches en ID | No | Solo haría falta si los saltos se resolvieran en ID; por D4 se resuelven en EX y el forwarding a EX ya cubre sus operandos |
+
+Los caminos que existen salen todos de latches (EX/MEM, MEM/WB) o del dato que se escribe en el banco, así que ninguno parte de la salida combinacional de la ALU o de la DMEM del mismo ciclo.
+
 #### Tabla de casos
 
 | Caso | Ejemplo | Solución | Ciclos perdidos |
@@ -275,12 +289,37 @@ Penalización: 2 ciclos por salto tomado, 0 si no se toma.
 | Cualquiera, distancia 3 | `add x1,..` / otra / otra / `sub x2,x1,..` | Bypass del banco | 0 |
 | Load → uso, distancia 1 | `lw x1,0(x2)` / `add x3,x1,x4` | Stall de 1 ciclo + forwarding desde MEM/WB | 1 |
 | Load → uso, distancia 2 | `lw x1,..` / otra / `add x3,x1,..` | Forwarding desde MEM/WB (dato leído) | 0 |
+| Load → uso, distancia 3 | `lw x1,..` / otra / otra / `add x3,x1,..` | Bypass del banco | 0 |
+| Doble dependencia del mismo registro | `add x1,..` / `addi x1,x1,1` / `sub x2,x1,..` | Forwarding desde EX/MEM, que tiene prioridad sobre MEM/WB por ser el valor más nuevo | 0 |
+| Dos operandos de productores distintos | `add x1,..` / `add x2,..` / `sub x3,x1,x2` | Cada operando tiene su multiplexor: A desde MEM/WB, B desde EX/MEM | 0 |
 | Dato de un store | `addi x5,..` / `sw x5,0(x2)` | Forwarding sobre el camino de rs2, que también es el dato a guardar | 0 |
-| Load → store del mismo dato | `lw x1,..` / `sw x1,0(x2)` | Se trata como load-use: stall de 1 ciclo | 1 |
+| Base de un load o store | `addi x2,..` / `lw x1,0(x2)` | Forwarding sobre rs1, que va a la ALU para calcular la dirección | 0 |
+| Load → store del mismo dato | `lw x1,..` / `sw x1,0(x2)` | Se trata como load-use: stall de 1 ciclo (no hay forwarding MEM/WB → MEM) | 1 |
+| Load → base de otro acceso | `lw x2,..` / `lw x1,0(x2)` | Stall de 1 ciclo + forwarding desde MEM/WB | 1 |
 | Operandos de un branch | `addi x1,..` / `bne x1,x0,..` | Forwarding a EX (el comparador usa los valores adelantados) | 0 |
+| Load → branch | `lw x1,..` / `beq x1,x2,..` | Stall de 1 ciclo + forwarding desde MEM/WB | 1 |
 | Base de `jalr` | `addi x1,..` / `jalr x0,0(x1)` | Forwarding a EX | 0 |
 | `jal`/`jalr` como productor | `jal x1,f` / ... / `add x2,x1,..` | El valor adelantado es `PC + 4` (ver abajo) | 0 |
+| `lui` como productor | `lui x1,0x12345` / `addi x1,x1,0x678` | Forwarding desde EX/MEM; el resultado de `lui` sale de la ALU (`x0 + imm`) | 0 |
+| Instrucción que no lee el registro | `addi x1,..` / `jal x5,f` | Ninguna: el decodificador pone `rs1 = rs2 = 0` y no hay coincidencia | 0 |
+| Productor anulado (burbuja o flush) | `beq` tomado que descarta un `add x1,..` | Ninguna: con `valid = 0` no se adelanta ni se escribe | 0 |
 | Destino x0 | `addi x0,x0,5` / `add x1,x0,x0` | No se escribe ni se adelanta nunca | 0 |
+| Load con destino x0 | `lw x0,0(x2)` / `add x1,x0,x0` | No hay stall (`idex_rd != 0` falla); la DMEM se lee pero el dato se descarta | 0 |
+| `jal`/`jalr` con destino x0 | `jal x0,f` (`j f`) / `add x1,x0,..` | No se adelanta `PC + 4`; x0 sigue en 0 | 0 |
+| Lectura de x0 mientras se "escribe" x0 | WB con `rd = 0` / ID lee x0 | El bypass también exige `rd != 0`, así que devuelve 0 | 0 |
+
+#### El caso de x0
+
+x0 vale siempre 0 aunque una instrucción lo tenga como destino. Eso se cuida en cuatro lugares: los tres primeros hacen falta para que el resultado sea correcto y el cuarto evita un stall innecesario.
+
+| Lugar | Condición | Si faltara |
+|---|---|---|
+| Banco de registros | Escribe solo si `rd != 0`, y x0 no tiene registro: su lectura es la constante 0 | `addi x0,x0,5` dejaría un 5 en x0 |
+| Bypass del banco | Solo si `rd != 0` | Una lectura de x0 en ID devolvería el dato que WB intenta escribir en x0 |
+| Unidad de forwarding | `exmem_rd != 0`, `memwb_rd != 0` | `addi x0,x0,5` / `add x1,x0,x0` adelantaría el 5 y daría `x1 = 10` |
+| Detección de load-use | `idex_rd != 0` | `lw x0,..` seguido de algo que lee x0 frenaría un ciclo sin necesidad (sería correcto pero más lento) |
+
+Las instrucciones que no leen un registro tienen `rs = 0` (lo pone el decodificador), así que la condición `rd != 0` también evita que coincidan por accidente con un productor que escribe x0.
 
 #### Unidad de forwarding (en EX)
 
@@ -300,11 +339,11 @@ sino                                                                          ->
 #### Unidad de detección de riesgos (en ID)
 
 ```
-stall = idex_valid && idex_mem_read && idex_rd != 0 &&
+stall = ifid_valid && idex_valid && idex_mem_read && idex_rd != 0 &&
         ((id_use_rs1 && idex_rd == id_rs1) || (id_use_rs2 && idex_rd == id_rs2))
 ```
 
-`id_use_rs1` e `id_use_rs2` salen del decodificador y valen 1 solo si la instrucción realmente lee ese registro. Así un `addi`, cuyos bits [24:20] son parte del inmediato, no provoca stalls falsos.
+`id_use_rs1` e `id_use_rs2` salen del decodificador y valen 1 solo si la instrucción realmente lee ese registro. Así un `addi`, cuyos bits [24:20] son parte del inmediato, no provoca stalls falsos. `ifid_valid` evita frenar por una burbuja en ID, que no va a usar ningún dato.
 
 | Instrucción | Usa rs1 | Usa rs2 |
 |---|---|---|
@@ -313,14 +352,43 @@ stall = idex_valid && idex_mem_read && idex_rd != 0 &&
 | Stores, branches | Sí | Sí |
 | `lui`, `jal`, HALT | No | No |
 
-Cuando `stall = 1`: el PC y IF/ID no se actualizan y ID/EX recibe una burbuja.
+Cuando `stall = 1`: el PC y IF/ID no se actualizan y ID/EX recibe una burbuja (`idex_valid = 0`). EX/MEM y MEM/WB avanzan normalmente, así que en el ciclo siguiente el load está en MEM/WB y el consumidor, todavía en ID, pasa a EX y toma el dato con el forwarding desde MEM/WB.
 
-#### Banco de registros
+Ciclo a ciclo, para `lw x1,0(x2)` / `add x3,x1,x4`:
+
+| Ciclo | IF | ID | EX | MEM | WB |
+|---|---|---|---|---|---|
+| 1 | `lw` | | | | |
+| 2 | `add` | `lw` | | | |
+| 3 | sig. | `add` | `lw` → **stall** | | |
+| 4 | sig. | `add` | burbuja | `lw` | |
+| 5 | sig.+1 | sig. | `add` ← MEM/WB | burbuja | `lw` |
+
+Un stall y un flush no pueden pedirse en el mismo ciclo: el stall exige un load en EX y el flush un salto tomado en EX.
+
+#### Banco de registros: escritura y lectura en el mismo ciclo
+
+En el ciclo en que una instrucción está en WB escribiendo `rd`, la instrucción que está en ID puede estar leyendo ese mismo registro (distancia 3). El libro lo resuelve escribiendo en la primera mitad del ciclo y leyendo en la segunda; en una FPGA eso obliga a usar el flanco negativo para la escritura, lo que parte el ciclo a la mitad para los caminos que pasan por el banco y complica el análisis de tiempo. Las opciones fueron:
+
+| Opción | Cómo funciona | Problema |
+|---|---|---|
+| Escribir en el flanco negativo | El registro ya tiene el valor nuevo cuando ID lo lee | Dos flancos en el mismo diseño; los caminos de WB y de ID tienen medio ciclo cada uno |
+| Forwarding desde WB a ID con un multiplexor afuera del banco | Igual que el bypass, pero en el datapath | Es lo mismo con más señales sueltas |
+| Bypass dentro del banco | Lectura combinacional que devuelve el dato de escritura si las direcciones coinciden | Ninguno: es un comparador y un multiplexor por puerto de lectura |
+
+Se eligió el bypass dentro del banco:
+
+```verilog
+assign w_en       = i_enable && i_reg_write && (i_rd != 0);
+assign o_rs1_data = (i_rs1 == 0)                ? 32'd0   :
+                    (w_en && i_rs1 == i_rd)     ? i_wdata :
+                                                  regs[i_rs1];
+```
 
 - 31 registros de 32 bits con flip-flops; `x0` no se guarda y su lectura devuelve siempre 0.
-- Escritura en el flanco positivo si `enable && reg_write && rd != 0`.
-- Lectura combinacional con bypass: si la dirección leída coincide con la que se está escribiendo en ese ciclo (y la escritura está habilitada), devuelve el dato de escritura.
-- Tres puertos de lectura: rs1 y rs2 para ID, y uno para la Debug Unit.
+- Escritura en el flanco positivo si `enable && reg_write && rd != 0` (el `reg_write` que llega de WB ya incluye `memwb_valid`).
+- Lectura combinacional con bypass: si la dirección leída coincide con la que se está escribiendo en ese ciclo y la escritura está habilitada (lo que incluye `rd != 0`), devuelve el dato de escritura.
+- Tres puertos de lectura: rs1 y rs2 para ID, y uno para la Debug Unit. El de la Debug Unit no necesita bypass, porque se usa con el procesador detenido y entonces no hay escrituras.
 
 **Justificación.** Es el esquema clásico del libro, con un solo stall posible (load-use) y sin forwarding hacia ID gracias a D4. El bypass del banco evita depender de escribir en la primera mitad del ciclo, que en FPGA obligaría a usar el flanco negativo.
 
