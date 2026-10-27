@@ -5,8 +5,8 @@ Cada decisión tiene el contexto, las opciones que se consideraron, lo que se el
 | # | Decisión | Elección | Issue | Estado |
 |---|---|---|---|---|
 | D1 | Tamaño y mapa de las memorias | IMEM y DMEM de 256 palabras (1 KiB) cada una, separadas | #2 | Propuesta |
-| D2 | Implementación de las memorias | RAM distribuida inferida (lectura asíncrona) | #2 | Propuesta |
-| D3 | Accesos desalineados | No soportados; el hardware ignora los bits bajos | #2 | Propuesta |
+| D2 | Implementación de las memorias | RAM distribuida inferida (lectura asíncrona); BRAM inferida, no IP, como alternativa | #2 | Propuesta |
+| D3 | Accesos desalineados | No soportados ni detectados; el hardware ignora los bits bajos (datos y fetch) | #2 | Propuesta |
 | D4 | Etapa donde se resuelven los saltos | EX para beq, bne, jal y jalr | #3 | Propuesta |
 | D5 | Riesgos de control | Predecir no tomado + flush de 2 instrucciones | #3 | Propuesta |
 | D6 | Riesgos de datos | Forwarding a EX + stall de load-use + bypass del banco | #4 | Propuesta |
@@ -32,29 +32,82 @@ Cada decisión tiene el contexto, las opciones que se consideraron, lo que se el
 
 - Las dos memorias son independientes (arquitectura Harvard) y cada una arranca en la dirección 0. Eso evita el riesgo estructural entre IF y MEM.
 - El PC arranca en `0x00000000`.
-- Direccionamiento por byte y little-endian, como define RISC-V. Los bits `[1:0]` de una dirección eligen el byte dentro de la palabra.
+- Direccionamiento por byte y little-endian, como define RISC-V. Las memorias se organizan internamente en palabras de 32 bits: los bits `[9:2]` de la dirección eligen la palabra y los bits `[1:0]` el byte dentro de ella.
 - Los bits por encima del 9 se ignoran: una dirección fuera de rango se repite sobre la memoria (`0x400` es lo mismo que `0x000`). No se detecta como error.
 
-**Justificación.** 256 instrucciones alcanzan con margen para cualquier programa de prueba razonable, y 1 KiB de datos permite probar arreglos chicos. El tamaño es un parámetro (`NB_ADDR = 8`), así que agrandarlo después es cambiar un número.
+**Mapeo de una dirección de byte a la memoria:**
+
+```
+ 31          10 9                2 1   0
++--------------+------------------+-----+
+|  ignorados   | índice de palabra| byte|
++--------------+------------------+-----+
+                  addr[9:2]        addr[1:0]
+```
+
+| Dirección | Palabra | Byte | Bits de la palabra que ocupa el byte |
+|---|---|---|---|
+| `0x000` | 0 | 0 | `[7:0]` |
+| `0x001` | 0 | 1 | `[15:8]` |
+| `0x002` | 0 | 2 | `[23:16]` |
+| `0x003` | 0 | 3 | `[31:24]` |
+| `0x00C` | 3 | 0 | `[7:0]` |
+| `0x3FC` | 255 | 0 | `[7:0]` (última palabra) |
+| `0x404` | 1 | 0 | `[7:0]` (se repite sobre la palabra 1) |
+
+Por ser little-endian, `sw` de `0x11223344` en `0x000` deja `0x44` en el byte `0x000` y `0x11` en el `0x003`, y un `lbu` de `0x000` devuelve `0x44`.
+
+**Justificación.** 256 instrucciones alcanzan con margen para cualquier programa de prueba razonable, y 1 KiB de datos permite probar arreglos chicos. El tamaño es un parámetro (`NB_ADDR = 8`), así que agrandarlo después es cambiar un número. Además encaja con el resto del diseño:
+
+- el protocolo de carga acepta hasta `N = 256` palabras y el volcado de la DMEM manda como máximo 256 palabras (1231 bytes, unos 107 ms a 115200 baudios, ver [protocolo.md](protocolo.md)),
+- las direcciones de la Debug Unit hacia las memorias (`i_imem_waddr`, `i_dbg_dmem_addr`, `o_dmem_waddr`) son de 8 bits, un índice de palabra, no de byte,
+- las dos memorias entran en un solo bloque de BRAM de 36 Kb cada una si en algún momento se cambia la implementación (ver D2), y en LUTRAM ocupan poco.
 
 ### D2. Implementación: RAM distribuida inferida
 
-**Contexto.** En la Artix-7 hay dos opciones:
+**Contexto.** Hay dos preguntas separadas: qué recurso de la FPGA usar (RAM distribuida o Block RAM) y, si fuera BRAM, si instanciarla con el IP core *Block Memory Generator* o dejar que Vivado la infiera desde Verilog.
 
-| | RAM distribuida (LUTRAM) | Block RAM (IP o inferida) |
+**Recurso de la Artix-7:**
+
+| | RAM distribuida (LUTRAM) | Block RAM |
 |---|---|---|
 | Lectura | Asíncrona, el dato sale en el mismo ciclo | Síncrona, el dato sale después del flanco |
-| Encaje en el pipeline | Directo, como el datapath del libro | Hay que adelantar la dirección un ciclo |
-| Costo para 2 × 1 KiB | Del orden de pocos cientos de LUTs de 20 800 | 1 bloque de 36 Kb por memoria |
-| Puertos | 1 de escritura + varios de lectura | 2 puertos completos |
+| Encaje en el pipeline | Directo, como el datapath del libro | Hay que adelantar la dirección un ciclo (ver abajo) |
+| Costo para 2 × 1 KiB | Aprox. 128 LUTs por cada puerto de lectura de 256 × 32 (`RAM256X1S` usa 4 LUTs por bit); con los puertos de D2, unos 250 a 550 LUTs de 20 800 (de las 9600 que pueden ser memoria) | 1 bloque de 36 Kb por memoria, de 50 |
+| Puertos | 1 de escritura + 1 o más de lectura (cada puerto de lectura extra replica la memoria) | 2 puertos completos (lectura y escritura cada uno) |
+| Retardo de lectura | El de la LUT más los multiplexores F7/F8, unos 1,5 a 2 ns | Clock-to-out de la BRAM, unos 2 a 2,5 ns, pero empieza en el flanco |
 
-**Impacto de la BRAM en IF y MEM (lo que pide analizar la issue).** Con lectura síncrona, si la dirección de la IMEM es el PC, la instrucción recién sale un ciclo después: es como agregar una etapa. La solución es conectar a la dirección el *siguiente PC* (la salida del multiplexor que elige PC+4, destino de salto o PC congelado), de modo que el PC y la BRAM capturan la misma dirección en el mismo flanco y el registro de salida de la BRAM pasa a ser la mitad "instrucción" de IF/ID. Eso trae tres consecuencias:
+Las cifras de LUTs son estimaciones; el número real sale del reporte de utilización cuando se sintetice la memoria en M1.
 
-- un stall ya no se resuelve solo congelando IF/ID: hay que volver a presentar la misma dirección o deshabilitar la BRAM,
-- un flush no puede escribir una NOP en el registro interno de la BRAM, así que depende de un bit de válido,
-- el camino del siguiente PC (que incluye la decisión de salto de EX) tiene que llegar a la BRAM antes del flanco, lo que probablemente lo vuelve crítico.
+**IP core o memoria inferida (si se usara BRAM):**
 
-En MEM pasa lo mismo con la dirección que calcula la ALU.
+| | IP core (Block Memory Generator) | Inferida desde Verilog |
+|---|---|---|
+| Fuente | Archivo `.xci` generado por Vivado | Un `.v` común en `rtl/core/` |
+| Contenido inicial | Archivo `.coe` | `$readmemh` con el `.hex` del ensamblador |
+| Simulación | Necesita las bibliotecas de Xilinx; no corre en Icarus | Cualquier simulador |
+| Repositorio | Hay que versionar el `.xci` y regenerarlo en `crear_proyecto.tcl`; cambia entre versiones de Vivado | Nada especial |
+| Control | Opciones de la GUI (registro de salida, ancho por puerto, byte enables) | Hay que respetar las plantillas de inferencia de Vivado (UG901) |
+
+Para lo que necesitamos (un ancho, un reloj, escritura por byte) la inferencia da el mismo resultado que el IP sin sus inconvenientes. **Si en algún momento se pasa a BRAM, se infiere, no se usa el IP core.**
+
+**Impacto de la lectura sincrónica de la BRAM en IF y MEM (lo que pide analizar la issue).**
+
+*En IF.* Si la dirección de la IMEM es el PC, la instrucción recién sale un ciclo después de que el PC cambia: en la práctica agrega una etapa, y los saltos pasarían a descartar 3 instrucciones en lugar de 2. Para evitarlo hay que conectar a la dirección el *siguiente PC* (la salida del multiplexor que elige PC+4, destino de salto o PC congelado), de modo que el PC y la BRAM capturan la misma dirección en el mismo flanco y el registro de salida de la BRAM pasa a ser la mitad "instrucción" de IF/ID (`ifid_instr`). Eso trae cuatro consecuencias:
+
+- un stall ya no se resuelve solo congelando IF/ID: hay que deshabilitar la BRAM (su pin de enable conectado a `i_enable && !stall`) para que mantenga la salida,
+- un flush no puede escribir una NOP en el registro interno de la BRAM, así que depende de que el bit `ifid_valid` se ponga en 0 y de que ID ignore la instrucción cuando no es válida,
+- el camino del siguiente PC, que incluye la decisión de salto de EX (forwarding, comparador, sumador del destino, multiplexor), tiene que llegar a la dirección de la BRAM antes del flanco y respetar su tiempo de setup, que es mayor que el de un flip-flop; ese camino ya es largo en este diseño y probablemente pase a ser el crítico,
+- después del reset, el registro de salida de la BRAM no tiene la instrucción de la dirección 0 hasta el primer flanco con enable, así que el primer ciclo hay que tratarlo como una burbuja.
+
+*En MEM.* La situación es más simple. La dirección y el dato de un store ya están registrados en EX/MEM, así que la BRAM se direcciona con `exmem_alu_result` y la escritura no cambia (ya era síncrona). Para los loads el dato sale después del flanco que cierra MEM, o sea en WB: el registro de salida de la BRAM toma el lugar de `memwb_mem_data`. Las consecuencias son:
+
+- la alineación y extensión de los loads (D3) se mueve de MEM a WB, y para eso `funct3` tiene que viajar en MEM/WB (`addr[1:0]` ya está en `memwb_alu_result`),
+- el forwarding desde MEM/WB de un load sale del registro de la BRAM más la lógica de alineación, que queda en el camino hacia los multiplexores de EX,
+- la BRAM también tiene que respetar `i_enable` para que el dato no cambie mientras el procesador está detenido,
+- el stall de load-use (D6) sigue siendo de un ciclo, porque el dato llega a WB igual que con lectura asíncrona.
+
+En resumen: en MEM la BRAM entra con cambios chicos; en IF obliga a rediseñar el PC, los stalls y el flush, y alarga el camino del salto.
 
 **Decisión.** IMEM y DMEM como RAM distribuida inferida desde Verilog:
 
@@ -63,7 +116,9 @@ always @(posedge i_clk) if (we) mem[waddr] <= wdata;  // escritura síncrona
 assign rdata = mem[raddr];                             // lectura asíncrona
 ```
 
-**Justificación.** Se comporta exactamente como el datapath que diseñamos, así que el diagrama, el modelo de referencia y el hardware coinciden ciclo a ciclo. El costo en LUTs es chico para este tamaño. Si en M7 el análisis de tiempo muestra que la lectura de memoria es el camino crítico, la BRAM queda como alternativa documentada.
+Para que Vivado no la convierta en BRAM ni en flip-flops, la lectura tiene que quedar asíncrona (sin registro) y el arreglo puede marcarse con `(* ram_style = "distributed" *)`.
+
+**Justificación.** Se comporta exactamente como el datapath que diseñamos, así que el diagrama, el modelo de referencia y el hardware coinciden ciclo a ciclo, y el PC, los stalls y el flush quedan como en D4 a D6. El costo en LUTs es chico para este tamaño (menos del 3 % del chip). Si en M7 el análisis de tiempo muestra que la lectura de memoria es el camino crítico, el orden para pasar a BRAM es primero la DMEM (cambios chicos) y después, solo si hace falta, la IMEM.
 
 **Puertos.**
 
@@ -96,9 +151,21 @@ La DMEM se organiza como 4 bancos de 256 × 8 bits (un banco por byte de la pala
 | `lbu` | `100` | byte `addr[1:0]` | ceros |
 | `lhu` | `101` | media palabra `addr[1]` | ceros |
 
-**Desalineados.** RISC-V permite que una implementación no los soporte. Decisión: **no se soportan**. El hardware ignora los bits que deberían ser cero (`addr[1:0]` en `lw`/`sw`, `addr[0]` en `lh`/`lhu`/`sh`), o sea que alinea hacia abajo sin avisar.
+**Desalineados.** Un acceso está alineado cuando la dirección es múltiplo de su tamaño. RISC-V permite que una implementación no soporte los desalineados (en ese caso deberían generar una excepción, pero este procesador no tiene excepciones). Decisión: **no se soportan y no se detectan**. El hardware ignora los bits que deberían ser cero, o sea que alinea hacia abajo sin avisar:
 
-**Justificación.** Soportarlos implicaría partir un acceso en dos ciclos o leer dos palabras, con un costo grande para un caso que los programas de prueba no necesitan. Para que no pase desapercibido, el modelo de referencia en Python (M4) marca como error cualquier acceso desalineado, así un test que lo provoque falla en simulación.
+| Instrucción | Alineado si | Bits ignorados | Ejemplo desalineado | Qué hace el hardware |
+|---|---|---|---|---|
+| `lb`, `lbu`, `sb` | siempre | – | – | – |
+| `lh`, `lhu` | `addr[0] = 0` | `addr[0]` | `lh` en `0x003` | Lee la media palabra alta de la palabra 0 (bytes `0x002`–`0x003`) |
+| `sh` | `addr[0] = 0` | `addr[0]` | `sh` en `0x001` | Escribe los bytes `0x000`–`0x001` |
+| `lw` | `addr[1:0] = 00` | `addr[1:0]` | `lw` en `0x006` | Lee la palabra 1 completa (bytes `0x004`–`0x007`) |
+| `sw` | `addr[1:0] = 00` | `addr[1:0]` | `sw` en `0x00A` | Escribe la palabra 2 completa (bytes `0x008`–`0x00B`) |
+
+Esto sale solo de las tablas de arriba: las máscaras de `sh` y `sw` y la selección de `lh`/`lhu`/`lw` no miran esos bits, así que no hace falta lógica adicional.
+
+**Fetch desalineado.** La IMEM también ignora `pc[1:0]`. Con instrucciones de 4 bytes y sin la extensión C, el PC queda alineado siempre que los destinos de salto lo estén. No lo están si un `beq`, `bne` o `jal` tiene un desplazamiento que no es múltiplo de 4 (el formato admite múltiplos de 2) o si un `jalr` calcula una dirección con el bit 1 en 1 (el `& ~1` de D4 solo limpia el bit 0). En ese caso el procesador ejecuta la instrucción de la palabra `pc[9:2]` y el PC sigue desalineado (`PC + 4` mantiene `pc[1:0]`). El ensamblador (M4) genera desplazamientos múltiplos de 4 a partir de etiquetas, así que solo pasa con código armado a mano.
+
+**Justificación.** Soportarlos implicaría partir un acceso en dos ciclos o leer dos palabras, con un costo grande para un caso que los programas de prueba no necesitan, y detectarlos sin un mecanismo de excepciones solo serviría para frenar el procesador. Para que no pase desapercibido, el modelo de referencia en Python (M4) marca como error cualquier acceso a datos o fetch desalineado, así un test que lo provoque falla en simulación, y los programas de prueba usan solo accesos alineados.
 
 ---
 
