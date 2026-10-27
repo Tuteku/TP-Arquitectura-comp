@@ -49,6 +49,9 @@ __pycache__/
 sw/programas/*.hex
 sw/programas/*.lst
 
+# Estados finales del test bench y del modelo de referencia
+estado_*.txt
+
 # ==========================================
 #  Sistema operativo / editores
 # ==========================================
