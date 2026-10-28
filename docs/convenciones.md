@@ -56,8 +56,8 @@ La ALU del TP1 y la UART del TP2 están copiadas en `rtl/core/` y `rtl/uart/`, c
 ### Parámetros
 
 - Parámetros en mayúsculas. Anchos con prefijo `NB_` (number of bits): `NB_DATA`, `NB_ADDR`, `NB_REG`.
-- Constantes internas con `localparam`, también en mayúsculas: `OP_RTYPE`, `ALU_ADD`.
-- Los códigos de opcode, funct3 y operación de la ALU se definen una sola vez en `rtl/core/riscv_defs.vh` y se incluyen donde hagan falta, en lugar de repetir números mágicos.
+- Constantes internas de un módulo con `localparam`, también en mayúsculas: `NB_SHIFT`, los estados de una FSM.
+- Los códigos de opcode, funct3, funct7, operación de la ALU y señales de control se definen una sola vez en `rtl/core/riscv_defs.vh` como macros `` `define `` y se incluyen con `` `include "riscv_defs.vh" `` donde hagan falta, en lugar de repetir números mágicos: `` `OP_RTYPE ``, `` `ALU_ADD ``. El archivo explica por qué macros y no `localparam`.
 
 ### Estilo
 
