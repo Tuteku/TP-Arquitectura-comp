@@ -96,7 +96,7 @@ module tb_imm_gen;
         check(32'hFFFFFFFF, 3'b111, 32'd0);
 
         // Aleatorios: 100 por cada valor de imm_sel
-        for (s  el = 0; sel < 8; sel = sel + 1)
+        for (sel = 0; sel < 8; sel = sel + 1)
             for (i = 0; i < CANT; i = i + 1) begin
                 i_instr = $random;
                 check(i_instr, sel, ref_imm(i_instr, sel));
