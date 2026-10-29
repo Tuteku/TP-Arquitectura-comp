@@ -5,6 +5,7 @@
 #   source scripts/crear_proyecto.tcl
 # o desde una terminal:
 #   vivado -mode batch -source scripts/crear_proyecto.tcl
+#   vivado -mode batch -source scripts/crear_proyecto.tcl -tclargs <tb>
 #
 # Los archivos se agregan sin copiarlos: editar un .v desde Vivado modifica el
 # de rtl/ o tb/. Un archivo nuevo entra al proyecto volviendo a correr el
@@ -34,6 +35,14 @@ if {[llength $restricc]} {
 # Cuando exista rtl/top/top.v conviene fijarlo:
 #   set_property top top [get_filesets sources_1]
 update_compile_order -fileset sources_1
+
+# El test bench a simular se puede pasar como argumento; sin argumento queda
+# en automático:
+#   vivado -mode batch -source scripts/crear_proyecto.tcl -tclargs tb_register_file
+if {[info exists argv] && [llength $argv]} {
+    set_property top [lindex $argv 0] [get_filesets sim_1]
+    set_property top_lib xil_defaultlib [get_filesets sim_1]
+}
 update_compile_order -fileset sim_1
 
 puts "Proyecto creado en [file join $raiz vivado tp_arqui.xpr]"
